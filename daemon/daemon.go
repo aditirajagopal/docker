@@ -12,7 +12,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -39,6 +38,7 @@ import (
 	"github.com/docker/docker/pkg/graphdb"
 	"github.com/docker/docker/pkg/idtools"
 	"github.com/docker/docker/pkg/ioutils"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/docker/docker/pkg/nat"
 	"github.com/docker/docker/pkg/parsers/filters"
@@ -50,6 +50,7 @@ import (
 	"github.com/docker/docker/pkg/truncindex"
 	"github.com/docker/docker/registry"
 	"github.com/docker/docker/runconfig"
+	"github.com/docker/docker/utils"
 	volumedrivers "github.com/docker/docker/volume/drivers"
 	"github.com/docker/docker/volume/local"
 	"github.com/docker/docker/volume/store"
@@ -57,8 +58,8 @@ import (
 )
 
 var (
-	validContainerNameChars   = `[a-zA-Z0-9][a-zA-Z0-9_.-]`
-	validContainerNamePattern = regexp.MustCompile(`^/?` + validContainerNameChars + `+$`)
+	validContainerNameChars   = utils.RestrictedNameChars
+	validContainerNamePattern = utils.RestrictedNamePattern
 
 	errSystemNotSupported = errors.New("The Docker daemon is not supported on this platform.")
 )
@@ -547,6 +548,11 @@ func (daemon *Daemon) GetEventFilter(filter filters.Args) *events.Filter {
 	return events.NewFilter(filter, daemon.GetLabels)
 }
 
+// SubscribeToEvents returns the currently record of events, a channel to stream new events from, and a function to cancel the stream of events.
+func (daemon *Daemon) SubscribeToEvents() ([]*jsonmessage.JSONMessage, chan interface{}, func()) {
+	return daemon.EventsService.Subscribe()
+}
+
 // GetLabels for a container or image id
 func (daemon *Daemon) GetLabels(id string) map[string]string {
 	// TODO: TestCase
@@ -1026,7 +1032,11 @@ func (daemon *Daemon) Graph() *graph.Graph {
 // imageName. If force is true, an existing tag with the same name may be
 // overwritten.
 func (daemon *Daemon) TagImage(repoName, tag, imageName string, force bool) error {
-	return daemon.repositories.Tag(repoName, tag, imageName, force)
+	if err := daemon.repositories.Tag(repoName, tag, imageName, force); err != nil {
+		return err
+	}
+	daemon.EventsService.Log("tag", utils.ImageReference(repoName, tag), "")
+	return nil
 }
 
 // PullImage initiates a pull operation. image is the repository name to pull, and
@@ -1136,6 +1146,14 @@ func (daemon *Daemon) GetRemappedUIDGID() (int, int) {
 // created. nil is returned if a child cannot be found. An error is
 // returned if the parent image cannot be found.
 func (daemon *Daemon) ImageGetCached(imgID string, config *runconfig.Config) (*image.Image, error) {
+	// for now just exit if imgID has no children.
+	// maybe parentRefs in graph could be used to store
+	// the Image obj children for faster lookup below but this can
+	// be quite memory hungry.
+	if !daemon.Graph().HasChildren(imgID) {
+		return nil, nil
+	}
+
 	// Retrieve all images
 	images := daemon.Graph().Map()
 

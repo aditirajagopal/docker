@@ -57,6 +57,7 @@ type endpoint struct {
 	joinInfo      *endpointJoinInfo
 	sandboxID     string
 	exposedPorts  []types.TransportPort
+	anonymous     bool
 	generic       map[string]interface{}
 	joinLeaveDone chan struct{}
 	dbIndex       uint64
@@ -77,6 +78,7 @@ func (ep *endpoint) MarshalJSON() ([]byte, error) {
 		epMap["generic"] = ep.generic
 	}
 	epMap["sandbox"] = ep.sandboxID
+	epMap["anonymous"] = ep.anonymous
 	return json.Marshal(epMap)
 }
 
@@ -105,6 +107,10 @@ func (ep *endpoint) UnmarshalJSON(b []byte) (err error) {
 	if v, ok := epMap["generic"]; ok {
 		ep.generic = v.(map[string]interface{})
 	}
+
+	if v, ok := epMap["anonymous"]; ok {
+		ep.anonymous = v.(bool)
+	}
 	return nil
 }
 
@@ -122,6 +128,7 @@ func (ep *endpoint) CopyTo(o datastore.KVObject) error {
 	dstEp.sandboxID = ep.sandboxID
 	dstEp.dbIndex = ep.dbIndex
 	dstEp.dbExists = ep.dbExists
+	dstEp.anonymous = ep.anonymous
 
 	if ep.iface != nil {
 		dstEp.iface = &endpointInterface{}
@@ -159,6 +166,12 @@ func (ep *endpoint) Network() string {
 	}
 
 	return ep.network.name
+}
+
+func (ep *endpoint) isAnonymous() bool {
+	ep.Lock()
+	defer ep.Unlock()
+	return ep.anonymous
 }
 
 // endpoint Key structure : endpoint/network-id/endpoint-id
@@ -425,28 +438,32 @@ func (ep *endpoint) sbLeave(sbox Sandbox, options ...EndpointOption) error {
 
 	ep.processOptions(options...)
 
-	ep.Lock()
-	ep.sandboxID = ""
-	ep.network = n
-	ep.Unlock()
-
-	if err := n.getController().updateToStore(ep); err != nil {
-		ep.Lock()
-		ep.sandboxID = sid
-		ep.Unlock()
-		return err
-	}
-
 	d, err := n.driver()
 	if err != nil {
 		return fmt.Errorf("failed to leave endpoint: %v", err)
 	}
 
+	ep.Lock()
+	ep.sandboxID = ""
+	ep.network = n
+	ep.Unlock()
+
 	if err := d.Leave(n.id, ep.id); err != nil {
-		return err
+		if _, ok := err.(types.MaskableError); !ok {
+			log.Warnf("driver error disconnecting container %s : %v", ep.name, err)
+		}
 	}
 
 	if err := sb.clearNetworkResources(ep); err != nil {
+		log.Warnf("Could not cleanup network resources on container %s disconnect: %v", ep.name, err)
+	}
+
+	// Update the store about the sandbox detach only after we
+	// have completed sb.clearNetworkresources above to avoid
+	// spurious logs when cleaning up the sandbox when the daemon
+	// ungracefully exits and restarts before completing sandbox
+	// detach but after store has been updated.
+	if err := n.getController().updateToStore(ep); err != nil {
 		return err
 	}
 
@@ -532,7 +549,10 @@ func (ep *endpoint) deleteEndpoint() error {
 		if _, ok := err.(types.ForbiddenError); ok {
 			return err
 		}
-		log.Warnf("driver error deleting endpoint %s : %v", name, err)
+
+		if _, ok := err.(types.MaskableError); !ok {
+			log.Warnf("driver error deleting endpoint %s : %v", name, err)
+		}
 	}
 
 	return nil
@@ -593,6 +613,14 @@ func CreateOptionPortMapping(portBindings []types.PortBinding) EndpointOption {
 		pbs := make([]types.PortBinding, len(portBindings))
 		copy(pbs, portBindings)
 		ep.generic[netlabel.PortMap] = pbs
+	}
+}
+
+// CreateOptionAnonymous function returns an option setter for setting
+// this endpoint as anonymous
+func CreateOptionAnonymous() EndpointOption {
+	return func(ep *endpoint) {
+		ep.anonymous = true
 	}
 }
 
@@ -701,6 +729,28 @@ func (ep *endpoint) releaseAddress() {
 	if ep.iface.addrv6 != nil && ep.iface.addrv6.IP.IsGlobalUnicast() {
 		if err := ipam.ReleaseAddress(ep.iface.v6PoolID, ep.iface.addrv6.IP); err != nil {
 			log.Warnf("Failed to release ip address %s on delete of endpoint %s (%s): %v", ep.iface.addrv6.IP, ep.Name(), ep.ID(), err)
+		}
+	}
+}
+
+func (c *controller) cleanupLocalEndpoints() {
+	nl, err := c.getNetworksForScope(datastore.LocalScope)
+	if err != nil {
+		log.Warnf("Could not get list of networks during endpoint cleanup: %v", err)
+		return
+	}
+
+	for _, n := range nl {
+		epl, err := n.getEndpointsFromStore()
+		if err != nil {
+			log.Warnf("Could not get list of endpoints in network %s during endpoint cleanup: %v", n.name, err)
+			continue
+		}
+
+		for _, ep := range epl {
+			if err := ep.Delete(); err != nil {
+				log.Warnf("Could not delete local endpoint %s during endpoint cleanup: %v", ep.name, err)
+			}
 		}
 	}
 }

@@ -662,7 +662,7 @@ This endpoint returns a live stream of a container's resource usage statistics.
 
       {
          "read" : "2015-01-08T22:57:31.547920715Z",
-         "network": {
+         "networks": {
                  "eth0": {
                      "rx_bytes": 5338,
                      "rx_dropped": 0,
@@ -1386,8 +1386,9 @@ Query Parameters:
 
 -   **dockerfile** - Path within the build context to the Dockerfile. This is
         ignored if `remote` is specified and points to an individual filename.
--   **t** – A repository name (and optionally a tag) to apply to
-        the resulting image in case of success.
+-   **t** – A name and optional tag to apply to the image in the `name:tag` format.
+        If you omit the `tag` the default `latest` value is assumed.
+        You can provide one or more `t` parameters.
 -   **remote** – A Git repository URI or HTTP/HTTPS URI build source. If the 
         URI specifies a filename, the file's contents are placed into a file 
 		called `Dockerfile`.
@@ -1550,7 +1551,10 @@ Return low-level information on the image `name`
           "Name" : "aufs",
           "Data" : null
        },
-       "Tags" : [
+       "RepoDigests" : [
+          "localhost:5000/test/busybox/example@sha256:cbbf2f9a99b47fc460d422812b6a5adff7dfee951d8fa2e4a98caa0382cfbdbf"
+       ],
+       "RepoTags" : [
           "example:1.0",
           "example:latest",
           "example:stable"
@@ -2419,7 +2423,7 @@ Status Codes:
 
 Query Parameters:
 
-- **filter** - JSON encoded value of the filters (a `map[string][]string`) to process on the volumes list. There is one available filter: `dangling=true`
+- **filters** - JSON encoded value of the filters (a `map[string][]string`) to process on the volumes list. There is one available filter: `dangling=true`
 
 Status Codes:
 
@@ -2428,13 +2432,13 @@ Status Codes:
 
 ### Create a volume
 
-`POST /volumes`
+`POST /volumes/create`
 
 Create a volume
 
 **Example request**:
 
-  POST /volumes HTTP/1.1
+  POST /volumes/create HTTP/1.1
   Content-Type: application/json
 
   {
@@ -2554,7 +2558,7 @@ Status Codes
 
 Query Parameters:
 
-- **filter** - JSON encoded value of the filters (a `map[string][]string`) to process on the volumes list. Available filters: `name=[network-names]` , `id=[network-ids]`
+- **filters** - JSON encoded value of the filters (a `map[string][]string`) to process on the networks list. Available filters: `name=[network-names]` , `id=[network-ids]`
 
 Status Codes:
 
