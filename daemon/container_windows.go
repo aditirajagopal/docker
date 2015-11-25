@@ -7,6 +7,7 @@ import (
 
 	"github.com/docker/docker/daemon/execdriver"
 	derr "github.com/docker/docker/errors"
+	"github.com/docker/docker/layer"
 	"github.com/docker/docker/volume"
 	"github.com/docker/libnetwork"
 )
@@ -27,7 +28,7 @@ func killProcessDirectly(container *Container) error {
 	return nil
 }
 
-func (container *Container) setupLinkedContainers() ([]string, error) {
+func (daemon *Daemon) setupLinkedContainers(container *Container) ([]string, error) {
 	return nil, nil
 }
 
@@ -36,12 +37,12 @@ func (container *Container) createDaemonEnvironment(linkedEnv []string) []string
 	return container.Config.Env
 }
 
-func (container *Container) initializeNetworking() error {
+func (daemon *Daemon) initializeNetworking(container *Container) error {
 	return nil
 }
 
 // ConnectToNetwork connects a container to the network
-func (container *Container) ConnectToNetwork(idOrName string) error {
+func (daemon *Daemon) ConnectToNetwork(container *Container, idOrName string) error {
 	return nil
 }
 
@@ -54,7 +55,7 @@ func (container *Container) setupWorkingDirectory() error {
 	return nil
 }
 
-func populateCommand(c *Container, env []string) error {
+func (daemon *Daemon) populateCommand(c *Container, env []string) error {
 	en := &execdriver.Network{
 		Interface: nil,
 	}
@@ -66,7 +67,7 @@ func populateCommand(c *Container, env []string) error {
 		if !c.Config.NetworkDisabled {
 			en.Interface = &execdriver.NetworkInterface{
 				MacAddress:   c.Config.MacAddress,
-				Bridge:       c.daemon.configStore.Bridge.VirtualSwitchName,
+				Bridge:       daemon.configStore.Bridge.VirtualSwitchName,
 				PortBindings: c.hostConfig.PortBindings,
 
 				// TODO Windows. Include IPAddress. There already is a
@@ -79,11 +80,6 @@ func populateCommand(c *Container, env []string) error {
 		return derr.ErrorCodeInvalidNetworkMode.WithArgs(c.hostConfig.NetworkMode)
 	}
 
-	pid := &execdriver.Pid{}
-
-	// TODO Windows. This can probably be factored out.
-	pid.HostPid = c.hostConfig.PidMode.IsHost()
-
 	// TODO Windows. More resource controls to be implemented later.
 	resources := &execdriver.Resources{
 		CommonResources: execdriver.CommonResources{
@@ -91,85 +87,86 @@ func populateCommand(c *Container, env []string) error {
 		},
 	}
 
-	// TODO Windows. Further refactoring required (privileged/user)
 	processConfig := execdriver.ProcessConfig{
-		Privileged:  c.hostConfig.Privileged,
-		Entrypoint:  c.Path,
-		Arguments:   c.Args,
-		Tty:         c.Config.Tty,
-		User:        c.Config.User,
+		CommonProcessConfig: execdriver.CommonProcessConfig{
+			Entrypoint: c.Path,
+			Arguments:  c.Args,
+			Tty:        c.Config.Tty,
+		},
 		ConsoleSize: c.hostConfig.ConsoleSize,
 	}
 
 	processConfig.Env = env
 
 	var layerPaths []string
-	img, err := c.daemon.graph.Get(c.ImageID)
+	img, err := daemon.imageStore.Get(c.ImageID)
 	if err != nil {
 		return derr.ErrorCodeGetGraph.WithArgs(c.ImageID, err)
 	}
-	for i := img; i != nil && err == nil; i, err = c.daemon.graph.GetParent(i) {
-		lp, err := c.daemon.driver.Get(i.ID, "")
-		if err != nil {
-			return derr.ErrorCodeGetLayer.WithArgs(c.daemon.driver.String(), i.ID, err)
-		}
-		layerPaths = append(layerPaths, lp)
-		err = c.daemon.driver.Put(i.ID)
-		if err != nil {
-			return derr.ErrorCodePutLayer.WithArgs(c.daemon.driver.String(), i.ID, err)
+
+	if img.RootFS != nil && img.RootFS.Type == "layers+base" {
+		max := len(img.RootFS.DiffIDs)
+		for i := 0; i <= max; i++ {
+			img.RootFS.DiffIDs = img.RootFS.DiffIDs[:i]
+			path, err := layer.GetLayerPath(daemon.layerStore, img.RootFS.ChainID())
+			if err != nil {
+				return derr.ErrorCodeGetLayer.WithArgs(err)
+			}
+			// Reverse order, expecting parent most first
+			layerPaths = append([]string{path}, layerPaths...)
 		}
 	}
-	m, err := c.daemon.driver.GetMetadata(c.ID)
+
+	m, err := layer.RWLayerMetadata(daemon.layerStore, c.ID)
 	if err != nil {
 		return derr.ErrorCodeGetLayerMetadata.WithArgs(err)
 	}
 	layerFolder := m["dir"]
 
-	// TODO Windows: Factor out remainder of unused fields.
 	c.command = &execdriver.Command{
-		ID:             c.ID,
-		Rootfs:         c.rootfsPath(),
-		ReadonlyRootfs: c.hostConfig.ReadonlyRootfs,
-		InitPath:       "/.dockerinit",
-		WorkingDir:     c.Config.WorkingDir,
-		Network:        en,
-		Pid:            pid,
-		Resources:      resources,
-		CapAdd:         c.hostConfig.CapAdd.Slice(),
-		CapDrop:        c.hostConfig.CapDrop.Slice(),
-		ProcessConfig:  processConfig,
-		ProcessLabel:   c.getProcessLabel(),
-		MountLabel:     c.getMountLabel(),
-		FirstStart:     !c.HasBeenStartedBefore,
-		LayerFolder:    layerFolder,
-		LayerPaths:     layerPaths,
-		Hostname:       c.Config.Hostname,
+		CommonCommand: execdriver.CommonCommand{
+			ID:            c.ID,
+			Rootfs:        c.rootfsPath(),
+			InitPath:      "/.dockerinit",
+			WorkingDir:    c.Config.WorkingDir,
+			Network:       en,
+			MountLabel:    c.getMountLabel(),
+			Resources:     resources,
+			ProcessConfig: processConfig,
+			ProcessLabel:  c.getProcessLabel(),
+		},
+		FirstStart:  !c.HasBeenStartedBefore,
+		LayerFolder: layerFolder,
+		LayerPaths:  layerPaths,
+		Hostname:    c.Config.Hostname,
+		Isolation:   c.hostConfig.Isolation,
+		ArgsEscaped: c.Config.ArgsEscaped,
 	}
 
 	return nil
 }
 
-// GetSize returns real size & virtual size
-func (container *Container) getSize() (int64, int64) {
+// getSize returns real size & virtual size
+func (daemon *Daemon) getSize(container *Container) (int64, int64) {
 	// TODO Windows
 	return 0, 0
 }
 
 // setNetworkNamespaceKey is a no-op on Windows.
-func (container *Container) setNetworkNamespaceKey(pid int) error {
+func (daemon *Daemon) setNetworkNamespaceKey(containerID string, pid int) error {
 	return nil
 }
 
 // allocateNetwork is a no-op on Windows.
-func (container *Container) allocateNetwork() error {
+func (daemon *Daemon) allocateNetwork(container *Container) error {
 	return nil
 }
 
-func (container *Container) updateNetwork() error {
+func (daemon *Daemon) updateNetwork(container *Container) error {
 	return nil
 }
 
-func (container *Container) releaseNetwork() {
+func (daemon *Daemon) releaseNetwork(container *Container) {
 }
 
 // appendNetworkMounts appends any network mounts to the array of mount points passed in.
@@ -179,11 +176,14 @@ func appendNetworkMounts(container *Container, volumeMounts []volume.MountPoint)
 	return volumeMounts, nil
 }
 
-func (container *Container) setupIpcDirs() error {
+func (daemon *Daemon) setupIpcDirs(container *Container) error {
 	return nil
 }
 
-func (container *Container) unmountIpcMounts() error {
+func (container *Container) unmountIpcMounts(unmount func(pth string) error) {
+}
+
+func detachMounted(path string) error {
 	return nil
 }
 
@@ -193,4 +193,17 @@ func (container *Container) ipcMounts() []execdriver.Mount {
 
 func getDefaultRouteMtu() (int, error) {
 	return -1, errSystemNotSupported
+}
+
+// TODO Windows: Fix Post-TP4. This is a hack to allow docker cp to work
+// against containers which have volumes. You will still be able to cp
+// to somewhere on the container drive, but not to any mounted volumes
+// inside the container. Without this fix, docker cp is broken to any
+// container which has a volume, regardless of where the file is inside the
+// container.
+func (daemon *Daemon) mountVolumes(container *Container) error {
+	return nil
+}
+func (container *Container) unmountVolumes(forceSyscall bool) error {
+	return nil
 }

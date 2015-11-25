@@ -195,7 +195,7 @@ func (a *Allocator) getAddrSpace(as string) (*addrSpace, error) {
 	defer a.Unlock()
 	aSpace, ok := a.addrSpaces[as]
 	if !ok {
-		return nil, types.BadRequestErrorf("cannot find address space %s (most likey the backing datastore is not configured)", as)
+		return nil, types.BadRequestErrorf("cannot find address space %s (most likely the backing datastore is not configured)", as)
 	}
 	return aSpace, nil
 }
@@ -220,7 +220,7 @@ func (a *Allocator) parsePoolRequest(addressSpace, pool, subPool string, v6 bool
 			return nil, nil, nil, ipamapi.ErrInvalidPool
 		}
 		if subPool != "" {
-			if ipr, err = getAddressRange(subPool); err != nil {
+			if ipr, err = getAddressRange(subPool, nw); err != nil {
 				return nil, nil, nil, err
 			}
 		}
@@ -431,9 +431,6 @@ func (a *Allocator) ReleaseAddress(poolID string, address net.IP) error {
 	aSpace.Unlock()
 
 	mask := p.Pool.Mask
-	if p.Range != nil {
-		mask = p.Range.Sub.Mask
-	}
 
 	h, err := types.GetHostPartIP(address, mask)
 	if err != nil {
@@ -471,7 +468,6 @@ func (a *Allocator) getAddress(nw *net.IPNet, bitmask *bitseq.Handle, prefAddres
 		ordinal = ipToUint64(types.GetMinimalIP(hostPart))
 		err = bitmask.Set(ordinal)
 	} else {
-		base.IP = ipr.Sub.IP
 		ordinal, err = bitmask.SetAnyInRange(ipr.Start, ipr.End)
 	}
 	if err != nil {

@@ -6,17 +6,16 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
+	"github.com/docker/docker/pkg/blkiodev"
 	"github.com/docker/docker/pkg/parsers"
 )
 
 var (
 	alphaRegexp  = regexp.MustCompile(`[a-zA-Z]`)
 	domainRegexp = regexp.MustCompile(`^(:?(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]))(:?\.(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])))*)\.?\s*$`)
-	// DefaultHTTPHost Default HTTP Host used if only port is provided to -H flag e.g. docker daemon -H tcp://:8080
-	DefaultHTTPHost = "localhost"
-
 	// DefaultHTTPPort Default HTTP Port used if only the protocol is provided to -H flag e.g. docker daemon -H tcp://
 	// TODO Windows. DefaultHTTPPort is only used on Windows if a -H parameter
 	// is not supplied. A better longer term solution would be to use a named
@@ -98,6 +97,16 @@ func (opts *ListOpts) GetAll() []string {
 	return (*opts.values)
 }
 
+// GetAllOrEmpty returns the values of the slice
+// or an empty slice when there are no values.
+func (opts *ListOpts) GetAllOrEmpty() []string {
+	v := *opts.values
+	if v == nil {
+		return make([]string, 0)
+	}
+	return v
+}
+
 // Get checks the existence of the specified key.
 func (opts *ListOpts) Get(key string) bool {
 	for _, k := range *opts.values {
@@ -161,6 +170,9 @@ func NewMapOpts(values map[string]string, validator ValidatorFctType) *MapOpts {
 // ValidatorFctType defines a validator function that returns a validated string and/or an error.
 type ValidatorFctType func(val string) (string, error)
 
+// ValidatorWeightFctType defines a validator function that returns a validated struct and/or an error.
+type ValidatorWeightFctType func(val string) (*blkiodev.WeightDevice, error)
+
 // ValidatorFctListType defines a validator function that returns a validated list of string and/or an error
 type ValidatorFctListType func(val string) ([]string, error)
 
@@ -173,6 +185,29 @@ func ValidateAttach(val string) (string, error) {
 		}
 	}
 	return val, fmt.Errorf("valid streams are STDIN, STDOUT and STDERR")
+}
+
+// ValidateWeightDevice validates that the specified string has a valid device-weight format.
+func ValidateWeightDevice(val string) (*blkiodev.WeightDevice, error) {
+	split := strings.SplitN(val, ":", 2)
+	if len(split) != 2 {
+		return nil, fmt.Errorf("bad format: %s", val)
+	}
+	if !strings.HasPrefix(split[0], "/dev/") {
+		return nil, fmt.Errorf("bad format for device path: %s", val)
+	}
+	weight, err := strconv.ParseUint(split[1], 10, 0)
+	if err != nil {
+		return nil, fmt.Errorf("invalid weight for device: %s", val)
+	}
+	if weight > 0 && (weight < 10 || weight > 1000) {
+		return nil, fmt.Errorf("invalid weight for device: %s", val)
+	}
+
+	return &blkiodev.WeightDevice{
+		Path:   split[0],
+		Weight: uint16(weight),
+	}, nil
 }
 
 // ValidateLink validates that the specified string has a valid link format (containerName:alias).

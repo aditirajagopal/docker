@@ -10,8 +10,10 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/server/httputils"
 	"github.com/docker/docker/api/server/router"
+	"github.com/docker/docker/api/server/router/container"
 	"github.com/docker/docker/api/server/router/local"
 	"github.com/docker/docker/api/server/router/network"
+	"github.com/docker/docker/api/server/router/volume"
 	"github.com/docker/docker/daemon"
 	"github.com/docker/docker/pkg/sockets"
 	"github.com/docker/docker/utils"
@@ -170,6 +172,8 @@ func (s *Server) makeHTTPHandler(handler httputils.APIFunc) http.HandlerFunc {
 func (s *Server) InitRouters(d *daemon.Daemon) {
 	s.addRouter(local.NewRouter(d))
 	s.addRouter(network.NewRouter(d))
+	s.addRouter(volume.NewRouter(d))
+	s.addRouter(container.NewRouter(d))
 
 	for _, srv := range s.servers {
 		srv.srv.Handler = s.CreateMux()

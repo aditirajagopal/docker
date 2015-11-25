@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/docker/docker/pkg/integration/checker"
+	"github.com/docker/docker/pkg/stringid"
 	"github.com/go-check/check"
 )
 
@@ -85,7 +86,7 @@ func (s *DockerSuite) TestRmiImgIDMultipleTag(c *check.C) {
 
 	// first checkout without force it fails
 	out, _, err = dockerCmdWithError("rmi", imgID)
-	expected := fmt.Sprintf("conflict: unable to delete %s (cannot be forced) - image is being used by running container %s", imgID[:12], containerID[:12])
+	expected := fmt.Sprintf("conflict: unable to delete %s (cannot be forced) - image is being used by running container %s", stringid.TruncateID(imgID), stringid.TruncateID(containerID))
 	// rmi tagged in multiple repos should have failed without force
 	c.Assert(err, checker.NotNil)
 	c.Assert(out, checker.Contains, expected)
@@ -193,6 +194,31 @@ func (s *DockerSuite) TestRmiWithMultipleRepositories(c *check.C) {
 	c.Assert(out, checker.Contains, "Untagged: "+newTag)
 }
 
+func (s *DockerSuite) TestRmiForceWithMultipleRepositories(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	imageName := "rmiimage"
+	tag1 := imageName + ":tag1"
+	tag2 := imageName + ":tag2"
+
+	_, err := buildImage(tag1,
+		`FROM scratch
+		MAINTAINER "docker"`,
+		true)
+	if err != nil {
+		c.Fatal(err)
+	}
+
+	dockerCmd(c, "tag", tag1, tag2)
+
+	out, _ := dockerCmd(c, "rmi", "-f", tag2)
+	c.Assert(out, checker.Contains, "Untagged: "+tag2)
+	c.Assert(out, checker.Not(checker.Contains), "Untagged: "+tag1)
+
+	// Check built image still exists
+	images, _ := dockerCmd(c, "images", "-a")
+	c.Assert(images, checker.Contains, imageName, check.Commentf("Built image missing %q; Images: %q", imageName, images))
+}
+
 func (s *DockerSuite) TestRmiBlank(c *check.C) {
 	testRequires(c, DaemonIsLinux)
 	// try to delete a blank image name
@@ -205,10 +231,10 @@ func (s *DockerSuite) TestRmiBlank(c *check.C) {
 	c.Assert(out, checker.Contains, "image name cannot be blank", check.Commentf("out: %s", out))
 
 	out, _, err = dockerCmdWithError("rmi", " ")
-	// Should have failed to delete '' image
+	// Should have failed to delete ' ' image
 	c.Assert(err, checker.NotNil)
 	// Expected error message not generated
-	c.Assert(out, checker.Contains, "no such id", check.Commentf("out: %s", out))
+	c.Assert(out, checker.Contains, "image name cannot be blank", check.Commentf("out: %s", out))
 }
 
 func (s *DockerSuite) TestRmiContainerImageNotFound(c *check.C) {

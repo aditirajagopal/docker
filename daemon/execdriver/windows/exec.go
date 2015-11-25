@@ -3,7 +3,6 @@
 package windows
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/Sirupsen/logrus"
@@ -31,24 +30,15 @@ func (d *Driver) Exec(c *execdriver.Command, processConfig *execdriver.ProcessCo
 		WorkingDirectory: c.WorkingDir,
 	}
 
-	// Configure the environment for the process // Note NOT c.ProcessConfig.Tty
+	// Configure the environment for the process // Note NOT c.ProcessConfig.Env
 	createProcessParms.Environment = setupEnvironmentVariables(processConfig.Env)
 
-	// While this should get caught earlier, just in case, validate that we
-	// have something to run.
-	if processConfig.Entrypoint == "" {
-		err = errors.New("No entrypoint specified")
-		logrus.Error(err)
+	// Create the commandline for the process // Note NOT c.ProcessConfig
+	createProcessParms.CommandLine, err = createCommandLine(processConfig, false)
+
+	if err != nil {
 		return -1, err
 	}
-
-	// Build the command line of the process
-	createProcessParms.CommandLine = processConfig.Entrypoint
-	for _, arg := range processConfig.Arguments {
-		logrus.Debugln("appending ", arg)
-		createProcessParms.CommandLine += " " + arg
-	}
-	logrus.Debugln("commandLine: ", createProcessParms.CommandLine)
 
 	// Start the command running in the container.
 	pid, stdin, stdout, stderr, rc, err := hcsshim.CreateProcessInComputeSystem(c.ID, pipes.Stdin != nil, true, !processConfig.Tty, createProcessParms)

@@ -4,13 +4,11 @@ package windows
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/daemon/execdriver"
@@ -74,9 +72,11 @@ type containerInit struct {
 	IgnoreFlushesDuringBoot bool        // Optimisation hint for container startup in Windows
 	LayerFolderPath         string      // Where the layer folders are located
 	Layers                  []layer     // List of storage layers
-	ProcessorWeight         int64       // CPU Shares 1..9 on Windows; or 0 is platform default.
+	ProcessorWeight         int64       `json:",omitempty"` // CPU Shares 0..10000 on Windows; where 0 will be ommited and HCS will default.
 	HostName                string      // Hostname
 	MappedDirectories       []mappedDir // List of mapped directories (volumes/mounts)
+	SandboxPath             string      // Location of unmounted sandbox (used for Hyper-V containers, not Windows Server containers)
+	HvPartition             bool        // True if it a Hyper-V Container
 }
 
 // defaultOwner is a tag passed to HCS to allow it to differentiate between
@@ -92,12 +92,6 @@ func (d *Driver) Run(c *execdriver.Command, pipes *execdriver.Pipes, hooks execd
 		err  error
 	)
 
-	// Make sure the client isn't asking for options which aren't supported
-	err = checkSupportedOptions(c)
-	if err != nil {
-		return execdriver.ExitStatus{ExitCode: -1}, err
-	}
-
 	cu := &containerInit{
 		SystemType:              "Container",
 		Name:                    c.ID,
@@ -108,6 +102,22 @@ func (d *Driver) Run(c *execdriver.Command, pipes *execdriver.Pipes, hooks execd
 		LayerFolderPath:         c.LayerFolder,
 		ProcessorWeight:         c.Resources.CPUShares,
 		HostName:                c.Hostname,
+	}
+
+	// Work out the isolation (whether it is a hypervisor partition)
+	if c.Isolation.IsDefault() {
+		// Not specified by caller. Take daemon default
+		cu.HvPartition = defaultIsolation.IsHyperV()
+	} else {
+		// Take value specified by caller
+		cu.HvPartition = c.Isolation.IsHyperV()
+	}
+
+	if cu.HvPartition {
+		cu.SandboxPath = filepath.Dir(c.LayerFolder)
+	} else {
+		cu.VolumePath = c.Rootfs
+		cu.LayerFolderPath = c.LayerFolder
 	}
 
 	for _, layerPath := range c.LayerPaths {
@@ -261,21 +271,11 @@ func (d *Driver) Run(c *execdriver.Command, pipes *execdriver.Pipes, hooks execd
 	// Configure the environment for the process
 	createProcessParms.Environment = setupEnvironmentVariables(c.ProcessConfig.Env)
 
-	// This should get caught earlier, but just in case - validate that we
-	// have something to run
-	if c.ProcessConfig.Entrypoint == "" {
-		err = errors.New("No entrypoint specified")
-		logrus.Error(err)
+	createProcessParms.CommandLine, err = createCommandLine(&c.ProcessConfig, c.ArgsEscaped)
+
+	if err != nil {
 		return execdriver.ExitStatus{ExitCode: -1}, err
 	}
-
-	// Build the command line of the process
-	createProcessParms.CommandLine = c.ProcessConfig.Entrypoint
-	for _, arg := range c.ProcessConfig.Arguments {
-		logrus.Debugln("appending ", arg)
-		createProcessParms.CommandLine += " " + syscall.EscapeArg(arg)
-	}
-	logrus.Debugf("CommandLine: %s", createProcessParms.CommandLine)
 
 	// Start the command running in the container.
 	pid, stdin, stdout, stderr, _, err := hcsshim.CreateProcessInComputeSystem(c.ID, pipes.Stdin != nil, true, !c.ProcessConfig.Tty, createProcessParms)

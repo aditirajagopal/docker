@@ -12,17 +12,17 @@ import (
 	"syscall"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/autogen/dockerversion"
 	"github.com/docker/docker/daemon/graphdriver"
 	derr "github.com/docker/docker/errors"
-	"github.com/docker/docker/pkg/fileutils"
+	"github.com/docker/docker/image"
+	"github.com/docker/docker/layer"
+	pblkiodev "github.com/docker/docker/pkg/blkiodev"
 	"github.com/docker/docker/pkg/idtools"
 	"github.com/docker/docker/pkg/parsers"
 	"github.com/docker/docker/pkg/parsers/kernel"
 	"github.com/docker/docker/pkg/sysinfo"
 	"github.com/docker/docker/runconfig"
-	"github.com/docker/docker/utils"
-	"github.com/docker/docker/volume"
+	"github.com/docker/docker/tag"
 	"github.com/docker/libnetwork"
 	nwconfig "github.com/docker/libnetwork/config"
 	"github.com/docker/libnetwork/drivers/bridge"
@@ -30,6 +30,7 @@ import (
 	"github.com/docker/libnetwork/netlabel"
 	"github.com/docker/libnetwork/options"
 	"github.com/docker/libnetwork/types"
+	blkiodev "github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/label"
 	"github.com/vishvananda/netlink"
 )
@@ -40,6 +41,21 @@ const (
 	linuxMaxCPUShares = 262144
 	platformSupported = true
 )
+
+func getBlkioWeightDevices(config *runconfig.HostConfig) ([]*blkiodev.WeightDevice, error) {
+	var stat syscall.Stat_t
+	var BlkioWeightDevices []*blkiodev.WeightDevice
+
+	for _, weightDevice := range config.BlkioWeightDevice {
+		if err := syscall.Stat(weightDevice.Path, &stat); err != nil {
+			return nil, err
+		}
+		WeightDevice := blkiodev.NewWeightDevice(int64(stat.Rdev/256), int64(stat.Rdev%256), weightDevice.Weight, 0)
+		BlkioWeightDevices = append(BlkioWeightDevices, WeightDevice)
+	}
+
+	return BlkioWeightDevices, nil
+}
 
 func parseSecurityOpt(container *Container, config *runconfig.HostConfig) error {
 	var (
@@ -115,9 +131,6 @@ func (daemon *Daemon) adaptContainerSettings(hostConfig *runconfig.HostConfig, a
 		// By default, MemorySwap is set to twice the size of Memory.
 		hostConfig.MemorySwap = hostConfig.Memory * 2
 	}
-	if hostConfig.MemoryReservation == 0 && hostConfig.Memory > 0 {
-		hostConfig.MemoryReservation = hostConfig.Memory
-	}
 }
 
 // verifyPlatformContainerSettings performs platform-specific validation of the
@@ -129,10 +142,6 @@ func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *runconfig.HostC
 	warnings, err := daemon.verifyExperimentalContainerSettings(hostConfig, config)
 	if err != nil {
 		return warnings, err
-	}
-
-	if hostConfig.LxcConf.Len() > 0 && !strings.Contains(daemon.ExecutionDriver().Name(), "lxc") {
-		return warnings, fmt.Errorf("Cannot use --lxc-conf with execdriver: %s", daemon.ExecutionDriver().Name())
 	}
 
 	// memory subsystem checks and adjustments
@@ -227,6 +236,11 @@ func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *runconfig.HostC
 	if hostConfig.BlkioWeight > 0 && (hostConfig.BlkioWeight < 10 || hostConfig.BlkioWeight > 1000) {
 		return warnings, fmt.Errorf("Range of blkio weight is from 10 to 1000.")
 	}
+	if len(hostConfig.BlkioWeightDevice) > 0 && !sysInfo.BlkioWeightDevice {
+		warnings = append(warnings, "Your kernel does not support Block I/O weight_device.")
+		logrus.Warnf("Your kernel does not support Block I/O weight_device. Weight-device discarded.")
+		hostConfig.BlkioWeightDevice = []*pblkiodev.WeightDevice{}
+	}
 	if hostConfig.OomKillDisable && !sysInfo.OomKillDisable {
 		hostConfig.OomKillDisable = false
 		return warnings, fmt.Errorf("Your kernel does not support oom kill disable.")
@@ -266,8 +280,8 @@ func checkSystem() error {
 func configureKernelSecuritySupport(config *Config, driverName string) error {
 	if config.EnableSelinuxSupport {
 		if selinuxEnabled() {
-			// As Docker on either btrfs or overlayFS and SELinux are incompatible at present, error on both being enabled
-			if driverName == "btrfs" || driverName == "overlay" {
+			// As Docker on overlayFS and SELinux are incompatible at present, error on overlayfs being enabled
+			if driverName == "overlay" {
 				return fmt.Errorf("SELinux is not supported with the %s graph driver", driverName)
 			}
 			logrus.Debug("SELinux enabled successfully")
@@ -285,29 +299,6 @@ func migrateIfDownlevel(driver graphdriver.Driver, root string) error {
 	return migrateIfAufs(driver, root)
 }
 
-func configureSysInit(config *Config, rootUID, rootGID int) (string, error) {
-	localCopy := filepath.Join(config.Root, "init", fmt.Sprintf("dockerinit-%s", dockerversion.VERSION))
-	sysInitPath := utils.DockerInitPath(localCopy)
-	if sysInitPath == "" {
-		return "", fmt.Errorf("Could not locate dockerinit: This usually means docker was built incorrectly. See https://docs.docker.com/project/set-up-dev-env/ for official build instructions.")
-	}
-
-	if sysInitPath != localCopy {
-		// When we find a suitable dockerinit binary (even if it's our local binary), we copy it into config.Root at localCopy for future use (so that the original can go away without that being a problem, for example during a package upgrade).
-		if err := idtools.MkdirAs(filepath.Dir(localCopy), 0700, rootUID, rootGID); err != nil && !os.IsExist(err) {
-			return "", err
-		}
-		if _, err := fileutils.CopyFile(sysInitPath, localCopy); err != nil {
-			return "", err
-		}
-		if err := os.Chmod(localCopy, 0700); err != nil {
-			return "", err
-		}
-		sysInitPath = localCopy
-	}
-	return sysInitPath, nil
-}
-
 func isBridgeNetworkDisabled(config *Config) bool {
 	return config.Bridge.Iface == disableNetworkBridge
 }
@@ -320,27 +311,18 @@ func (daemon *Daemon) networkOptions(dconfig *Config) ([]nwconfig.Option, error)
 
 	options = append(options, nwconfig.OptionDataDir(dconfig.Root))
 
-	if strings.TrimSpace(dconfig.DefaultNetwork) != "" {
-		dn := strings.Split(dconfig.DefaultNetwork, ":")
-		if len(dn) < 2 {
-			return nil, fmt.Errorf("default network daemon config must be of the form NETWORKDRIVER:NETWORKNAME")
-		}
-		options = append(options, nwconfig.OptionDefaultDriver(dn[0]))
-		options = append(options, nwconfig.OptionDefaultNetwork(strings.Join(dn[1:], ":")))
-	} else {
-		dd := runconfig.DefaultDaemonNetworkMode()
-		dn := runconfig.DefaultDaemonNetworkMode().NetworkName()
-		options = append(options, nwconfig.OptionDefaultDriver(string(dd)))
-		options = append(options, nwconfig.OptionDefaultNetwork(dn))
-	}
+	dd := runconfig.DefaultDaemonNetworkMode()
+	dn := runconfig.DefaultDaemonNetworkMode().NetworkName()
+	options = append(options, nwconfig.OptionDefaultDriver(string(dd)))
+	options = append(options, nwconfig.OptionDefaultNetwork(dn))
 
 	if strings.TrimSpace(dconfig.ClusterStore) != "" {
 		kv := strings.Split(dconfig.ClusterStore, "://")
-		if len(kv) < 2 {
+		if len(kv) != 2 {
 			return nil, fmt.Errorf("kv store daemon config must be of the form KV-PROVIDER://KV-URL")
 		}
 		options = append(options, nwconfig.OptionKVProvider(kv[0]))
-		options = append(options, nwconfig.OptionKVProviderURL(strings.Join(kv[1:], "://")))
+		options = append(options, nwconfig.OptionKVProviderURL(kv[1]))
 	}
 	if len(dconfig.ClusterOpts) > 0 {
 		options = append(options, nwconfig.OptionKVOpts(dconfig.ClusterOpts))
@@ -462,12 +444,25 @@ func initBridgeDriver(controller libnetwork.NetworkController, config *Config) e
 		ipamV4Conf.AuxAddresses["DefaultGatewayIPv4"] = config.Bridge.DefaultGatewayIPv4.String()
 	}
 
-	var ipamV6Conf *libnetwork.IpamConf
+	var (
+		ipamV6Conf     *libnetwork.IpamConf
+		deferIPv6Alloc bool
+	)
 	if config.Bridge.FixedCIDRv6 != "" {
 		_, fCIDRv6, err := net.ParseCIDR(config.Bridge.FixedCIDRv6)
 		if err != nil {
 			return err
 		}
+
+		// In case user has specified the daemon flag --fixed-cidr-v6 and the passed network has
+		// at least 48 host bits, we need to guarantee the current behavior where the containers'
+		// IPv6 addresses will be constructed based on the containers' interface MAC address.
+		// We do so by telling libnetwork to defer the IPv6 address allocation for the endpoints
+		// on this network until after the driver has created the endpoint and returned the
+		// constructed address. Libnetwork will then reserve this address with the ipam driver.
+		ones, _ := fCIDRv6.Mask.Size()
+		deferIPv6Alloc = ones <= 80
+
 		if ipamV6Conf == nil {
 			ipamV6Conf = &libnetwork.IpamConf{}
 		}
@@ -492,7 +487,8 @@ func initBridgeDriver(controller libnetwork.NetworkController, config *Config) e
 			netlabel.GenericData: netOption,
 			netlabel.EnableIPv6:  config.Bridge.EnableIPv6,
 		}),
-		libnetwork.NetworkOptionIpam("default", "", v4Conf, v6Conf))
+		libnetwork.NetworkOptionIpam("default", "", v4Conf, v6Conf),
+		libnetwork.NetworkOptionDeferIPv6Alloc(deferIPv6Alloc))
 	if err != nil {
 		return fmt.Errorf("Error creating default \"bridge\" network: %v", err)
 	}
@@ -599,18 +595,16 @@ func (daemon *Daemon) registerLinks(container *Container, hostConfig *runconfig.
 	return nil
 }
 
-func (daemon *Daemon) newBaseContainer(id string) *Container {
-	return &Container{
-		CommonContainer: CommonContainer{
-			ID:           id,
-			State:        NewState(),
-			execCommands: newExecStore(),
-			root:         daemon.containerRoot(id),
-			MountPoints:  make(map[string]*volume.MountPoint),
-		},
-		Volumes:   make(map[string]string),
-		VolumesRW: make(map[string]bool),
-	}
+// conditionalMountOnStart is a platform specific helper function during the
+// container start to call mount.
+func (daemon *Daemon) conditionalMountOnStart(container *Container) error {
+	return daemon.Mount(container)
+}
+
+// conditionalUnmountOnCleanup is a platform specific helper function called
+// during the cleanup of a container to unmount.
+func (daemon *Daemon) conditionalUnmountOnCleanup(container *Container) {
+	daemon.Unmount(container)
 }
 
 // getDefaultRouteMtu returns the MTU for the default route's interface.
@@ -630,4 +624,9 @@ func getDefaultRouteMtu() (int, error) {
 		}
 	}
 	return 0, errNoDefaultRoute
+}
+
+func restoreCustomImage(driver graphdriver.Driver, is image.Store, ls layer.Store, ts tag.Store) error {
+	// Unix has no custom images to register
+	return nil
 }

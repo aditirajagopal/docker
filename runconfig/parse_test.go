@@ -12,7 +12,6 @@ import (
 
 	flag "github.com/docker/docker/pkg/mflag"
 	"github.com/docker/docker/pkg/nat"
-	"github.com/docker/docker/pkg/parsers"
 )
 
 func parseRun(args []string) (*Config, *HostConfig, *flag.FlagSet, error) {
@@ -344,35 +343,6 @@ func setupPlatformVolume(u []string, w []string) ([]string, string) {
 	return a, s
 }
 
-func TestParseLxcConfOpt(t *testing.T) {
-	opts := []string{"lxc.utsname=docker", "lxc.utsname = docker "}
-
-	for _, o := range opts {
-		k, v, err := parsers.ParseKeyValueOpt(o)
-		if err != nil {
-			t.FailNow()
-		}
-		if k != "lxc.utsname" {
-			t.Fail()
-		}
-		if v != "docker" {
-			t.Fail()
-		}
-	}
-
-	// With parseRun too
-	_, hostconfig, _, err := parseRun([]string{"lxc.utsname=docker", "lxc.utsname = docker ", "img", "cmd"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, lxcConf := range hostconfig.LxcConf.Slice() {
-		if lxcConf.Key != "lxc.utsname" || lxcConf.Value != "docker" {
-			t.Fail()
-		}
-	}
-
-}
-
 // Simple parse with MacAddress validatation
 func TestParseWithMacAddress(t *testing.T) {
 	invalidMacAddress := "--mac-address=invalidMacAddress"
@@ -553,6 +523,18 @@ func TestParseModes(t *testing.T) {
 	}
 	if !hostconfig.UTSMode.Valid() {
 		t.Fatalf("Expected a valid UTSMode, got %v", hostconfig.UTSMode)
+	}
+	// shm-size ko
+	if _, _, _, err = parseRun([]string{"--shm-size=a128m", "img", "cmd"}); err == nil || err.Error() != "--shm-size: invalid SHM size" {
+		t.Fatalf("Expected an error with message '--shm-size: invalid SHM size', got %v", err)
+	}
+	// shm-size ok
+	_, hostconfig, _, err = parseRun([]string{"--shm-size=128m", "img", "cmd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostconfig.ShmSize != 134217728 {
+		t.Fatalf("Expected a valid ShmSize, got %v", hostconfig.ShmSize)
 	}
 }
 

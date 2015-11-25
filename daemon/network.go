@@ -134,7 +134,7 @@ func (daemon *Daemon) ConnectContainerToNetwork(containerName, networkName strin
 	if err != nil {
 		return err
 	}
-	return container.ConnectToNetwork(networkName)
+	return daemon.ConnectToNetwork(container, networkName)
 }
 
 // DisconnectContainerFromNetwork disconnects the given container from
@@ -145,4 +145,23 @@ func (daemon *Daemon) DisconnectContainerFromNetwork(containerName string, netwo
 		return err
 	}
 	return container.DisconnectFromNetwork(network)
+}
+
+// GetNetworkDriverList returns the list of plugins drivers
+// registered for network.
+func (daemon *Daemon) GetNetworkDriverList() map[string]bool {
+	pluginList := make(map[string]bool)
+
+	if !daemon.NetworkControllerEnabled() {
+		return nil
+	}
+	c := daemon.netController
+	networks := c.Networks()
+
+	for _, network := range networks {
+		driver := network.Type()
+		pluginList[driver] = true
+	}
+
+	return pluginList
 }

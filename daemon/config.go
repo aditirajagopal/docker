@@ -14,26 +14,24 @@ const (
 // CommonConfig defines the configuration of a docker daemon which are
 // common across platforms.
 type CommonConfig struct {
-	AutoRestart    bool
-	Bridge         bridgeConfig // Bridge holds bridge network specific configuration.
-	Context        map[string][]string
-	DisableBridge  bool
-	DNS            []string
-	DNSOptions     []string
-	DNSSearch      []string
-	ExecDriver     string
-	ExecOptions    []string
-	ExecRoot       string
-	GraphDriver    string
-	GraphOptions   []string
-	Labels         []string
-	LogConfig      runconfig.LogConfig
-	Mtu            int
-	Pidfile        string
-	RemappedRoot   string
-	Root           string
-	TrustKeyPath   string
-	DefaultNetwork string
+	AutoRestart   bool
+	Bridge        bridgeConfig // Bridge holds bridge network specific configuration.
+	Context       map[string][]string
+	DisableBridge bool
+	DNS           []string
+	DNSOptions    []string
+	DNSSearch     []string
+	ExecOptions   []string
+	ExecRoot      string
+	GraphDriver   string
+	GraphOptions  []string
+	Labels        []string
+	LogConfig     runconfig.LogConfig
+	Mtu           int
+	Pidfile       string
+	RemappedRoot  string
+	Root          string
+	TrustKeyPath  string
 
 	// ClusterStore is the storage backend used for the cluster information. It is used by both
 	// multihost networking (to store networks and endpoints information) and by the node discovery
@@ -62,7 +60,6 @@ func (config *Config) InstallCommonFlags(cmd *flag.FlagSet, usageFn func(string)
 	cmd.StringVar(&config.ExecRoot, []string{"-exec-root"}, "/var/run/docker", usageFn("Root of the Docker execdriver"))
 	cmd.BoolVar(&config.AutoRestart, []string{"#r", "#-restart"}, true, usageFn("--restart on the daemon has been deprecated in favor of --restart policies on docker run"))
 	cmd.StringVar(&config.GraphDriver, []string{"s", "-storage-driver"}, "", usageFn("Storage driver to use"))
-	cmd.StringVar(&config.ExecDriver, []string{"e", "-exec-driver"}, defaultExec, usageFn("Exec driver to use"))
 	cmd.IntVar(&config.Mtu, []string{"#mtu", "-mtu"}, 0, usageFn("Set the containers network MTU"))
 	// FIXME: why the inconsistency between "hosts" and "sockets"?
 	cmd.Var(opts.NewListOptsRef(&config.DNS, opts.ValidateIPAddress), []string{"#dns", "-dns"}, usageFn("DNS server to use"))

@@ -66,6 +66,7 @@ for version in "${versions[@]}"; do
 		device-mapper-devel # for "libdevmapper.h"
 		glibc-static
 		libselinux-devel # for "libselinux.so"
+		libtool-ltdl-devel # for pkcs11 "ltdl.h"
 		selinux-policy
 		selinux-policy-devel
 		sqlite-devel # for "sqlite3.h"

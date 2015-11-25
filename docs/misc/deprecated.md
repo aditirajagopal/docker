@@ -12,6 +12,15 @@ parent = "mn_use_docker"
 
 The following list of features are deprecated.
 
+### Docker ps 'before' and 'since' options
+
+**Deprecated In Release: [v1.10.0](https://github.com/docker/docker/releases/tag/v1.10.0)**
+
+**Target For Removal In Release: v1.12**
+
+The `docker ps --before` and `docker ps --since` options are deprecated.
+Use `docker ps --filter=before=...` and `docker ps --filter=since=...` instead.
+
 ### Command line short variant options
 **Deprecated In Release: v1.9**
 
@@ -70,7 +79,6 @@ are deprecated and replaced with double-dash options (`--opt`):
     docker ps -sinceId
     docker rm -link
     docker run -cidfile
-    docker run -cpuset
     docker run -dns
     docker run -entrypoint
     docker run -expose
@@ -87,13 +95,14 @@ are deprecated and replaced with double-dash options (`--opt`):
 
 The following double-dash options are deprecated and have no replacement:
 
+    docker run --cpuset
     docker run --networking
     docker ps --since-id
     docker ps --before-id
     docker search --trusted
 
 ### Auto-creating missing host paths for bind mounts
-**Deprected in Release: v1.9**
+**Deprecated in Release: v1.9**
 
 **Target for Removal in Release: 1.11**
 

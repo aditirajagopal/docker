@@ -10,24 +10,25 @@ import (
 	"github.com/docker/docker/api"
 	"github.com/docker/docker/api/server/httputils"
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/autogen/dockerversion"
+	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/parsers/filters"
 	"github.com/docker/docker/pkg/parsers/kernel"
+	"github.com/docker/docker/pkg/timeutils"
 	"github.com/docker/docker/utils"
 	"golang.org/x/net/context"
 )
 
 func (s *router) getVersion(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	v := &types.Version{
-		Version:    dockerversion.VERSION,
+		Version:    dockerversion.Version,
 		APIVersion: api.Version,
-		GitCommit:  dockerversion.GITCOMMIT,
+		GitCommit:  dockerversion.GitCommit,
 		GoVersion:  runtime.Version(),
 		Os:         runtime.GOOS,
 		Arch:       runtime.GOARCH,
-		BuildTime:  dockerversion.BUILDTIME,
+		BuildTime:  dockerversion.BuildTime,
 	}
 
 	version := httputils.VersionFromContext(ctx)
@@ -52,33 +53,23 @@ func (s *router) getInfo(ctx context.Context, w http.ResponseWriter, r *http.Req
 	return httputils.WriteJSON(w, http.StatusOK, info)
 }
 
-func buildOutputEncoder(w http.ResponseWriter) *json.Encoder {
-	w.Header().Set("Content-Type", "application/json")
-	outStream := ioutils.NewWriteFlusher(w)
-	// Write an empty chunk of data.
-	// This is to ensure that the HTTP status code is sent immediately,
-	// so that it will not block the receiver.
-	outStream.Write(nil)
-	return json.NewEncoder(outStream)
-}
-
 func (s *router) getEvents(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	if err := httputils.ParseForm(r); err != nil {
 		return err
 	}
-	since, err := httputils.Int64ValueOrDefault(r, "since", -1)
+	since, sinceNano, err := timeutils.ParseTimestamps(r.Form.Get("since"), -1)
 	if err != nil {
 		return err
 	}
-	until, err := httputils.Int64ValueOrDefault(r, "until", -1)
+	until, untilNano, err := timeutils.ParseTimestamps(r.Form.Get("until"), -1)
 	if err != nil {
 		return err
 	}
 
 	timer := time.NewTimer(0)
 	timer.Stop()
-	if until > 0 {
-		dur := time.Unix(until, 0).Sub(time.Now())
+	if until > 0 || untilNano > 0 {
+		dur := time.Unix(until, untilNano).Sub(time.Now())
 		timer = time.NewTimer(dur)
 	}
 
@@ -87,7 +78,19 @@ func (s *router) getEvents(ctx context.Context, w http.ResponseWriter, r *http.R
 		return err
 	}
 
-	enc := buildOutputEncoder(w)
+	w.Header().Set("Content-Type", "application/json")
+
+	// This is to ensure that the HTTP status code is sent immediately,
+	// so that it will not block the receiver.
+	w.WriteHeader(http.StatusOK)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	output := ioutils.NewWriteFlusher(w)
+	defer output.Close()
+
+	enc := json.NewEncoder(output)
 
 	current, l, cancel := s.daemon.SubscribeToEvents()
 	defer cancel()
@@ -106,7 +109,7 @@ func (s *router) getEvents(ctx context.Context, w http.ResponseWriter, r *http.R
 		current = nil
 	}
 	for _, ev := range current {
-		if ev.Time < since {
+		if ev.Time < since || ((ev.Time == since) && (ev.TimeNano < sinceNano)) {
 			continue
 		}
 		if err := handleEvent(ev); err != nil {

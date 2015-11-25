@@ -68,6 +68,7 @@ type sandbox struct {
 	joinLeaveDone chan struct{}
 	dbIndex       uint64
 	dbExists      bool
+	isStub        bool
 	inDelete      bool
 	sync.Mutex
 }
@@ -168,10 +169,18 @@ func (sb *sandbox) Delete() error {
 	c := sb.controller
 
 	// Detach from all endpoints
+	retain := false
 	for _, ep := range sb.getConnectedEndpoints() {
 		// endpoint in the Gateway network will be cleaned up
 		// when when sandbox no longer needs external connectivity
 		if ep.endpointInGWNetwork() {
+			continue
+		}
+
+		// Retain the sanbdox if we can't obtain the network from store.
+		if _, err := c.getNetworkFromStore(ep.getNetwork().ID()); err != nil {
+			retain = true
+			log.Warnf("Failed getting network for ep %s during sandbox %s delete: %v", ep.ID(), sb.ID(), err)
 			continue
 		}
 
@@ -184,11 +193,17 @@ func (sb *sandbox) Delete() error {
 		}
 	}
 
+	if retain {
+		sb.Lock()
+		sb.inDelete = false
+		sb.Unlock()
+		return fmt.Errorf("could not cleanup all the endpoints in container %s / sandbox %s", sb.containerID, sb.id)
+	}
 	// Container is going away. Path cache in etchosts is most
 	// likely not required any more. Drop it.
 	etchosts.Drop(sb.config.hostsPath)
 
-	if sb.osSbox != nil {
+	if sb.osSbox != nil && !sb.config.useDefaultSandBox {
 		sb.osSbox.Destroy()
 	}
 
@@ -445,7 +460,7 @@ func (sb *sandbox) populateNetworkResources(ep *endpoint) error {
 	i := ep.iface
 	ep.Unlock()
 
-	if i.srcName != "" {
+	if i != nil && i.srcName != "" {
 		var ifaceOptions []osl.IfaceOption
 
 		ifaceOptions = append(ifaceOptions, sb.osSbox.InterfaceOptions().Address(i.addr), sb.osSbox.InterfaceOptions().Routes(i.routes))
@@ -470,7 +485,7 @@ func (sb *sandbox) populateNetworkResources(ep *endpoint) error {
 	for _, gwep := range sb.getConnectedEndpoints() {
 		if len(gwep.Gateway()) > 0 {
 			if gwep != ep {
-				return nil
+				break
 			}
 			if err := sb.updateGateway(gwep); err != nil {
 				return err
@@ -941,6 +956,11 @@ func OptionGeneric(generic map[string]interface{}) SandboxOption {
 func (eh epHeap) Len() int { return len(eh) }
 
 func (eh epHeap) Less(i, j int) bool {
+	var (
+		cip, cjp int
+		ok       bool
+	)
+
 	ci, _ := eh[i].getSandbox()
 	cj, _ := eh[j].getSandbox()
 
@@ -955,14 +975,20 @@ func (eh epHeap) Less(i, j int) bool {
 		return true
 	}
 
-	cip, ok := ci.epPriority[eh[i].ID()]
-	if !ok {
-		cip = 0
+	if ci != nil {
+		cip, ok = ci.epPriority[eh[i].ID()]
+		if !ok {
+			cip = 0
+		}
 	}
-	cjp, ok := cj.epPriority[eh[j].ID()]
-	if !ok {
-		cjp = 0
+
+	if cj != nil {
+		cjp, ok = cj.epPriority[eh[j].ID()]
+		if !ok {
+			cjp = 0
+		}
 	}
+
 	if cip == cjp {
 		return eh[i].network.Name() < eh[j].network.Name()
 	}

@@ -1,13 +1,13 @@
 package daemon
 
 import (
-	"fmt"
 	"os"
 	"path"
 
 	"github.com/Sirupsen/logrus"
 	derr "github.com/docker/docker/errors"
-	"github.com/docker/docker/volume/store"
+	"github.com/docker/docker/layer"
+	volumestore "github.com/docker/docker/volume/store"
 )
 
 // ContainerRmConfig is a holder for passing in runtime config.
@@ -45,7 +45,7 @@ func (daemon *Daemon) ContainerRm(name string, config *ContainerRmConfig) error 
 
 		parentContainer, _ := daemon.Get(pe.ID())
 		if parentContainer != nil {
-			if err := parentContainer.updateNetwork(); err != nil {
+			if err := daemon.updateNetwork(parentContainer); err != nil {
 				logrus.Debugf("Could not update network to remove link %s: %v", n, err)
 			}
 		}
@@ -58,7 +58,7 @@ func (daemon *Daemon) ContainerRm(name string, config *ContainerRmConfig) error 
 		return err
 	}
 
-	if err := container.removeMountPoints(config.RemoveVolume); err != nil {
+	if err := daemon.removeMountPoints(container, config.RemoveVolume); err != nil {
 		logrus.Error(err)
 	}
 
@@ -71,7 +71,7 @@ func (daemon *Daemon) rm(container *Container, forceRemove bool) (err error) {
 		if !forceRemove {
 			return derr.ErrorCodeRmRunning
 		}
-		if err := container.Kill(); err != nil {
+		if err := daemon.Kill(container); err != nil {
 			return derr.ErrorCodeRmFailed.WithArgs(err)
 		}
 	}
@@ -90,7 +90,7 @@ func (daemon *Daemon) rm(container *Container, forceRemove bool) (err error) {
 	// if stats are currently getting collected.
 	daemon.statsCollector.stopCollection(container)
 
-	if err = container.Stop(3); err != nil {
+	if err = daemon.containerStop(container, 3); err != nil {
 		return err
 	}
 
@@ -111,7 +111,7 @@ func (daemon *Daemon) rm(container *Container, forceRemove bool) (err error) {
 			daemon.idIndex.Delete(container.ID)
 			daemon.containers.Delete(container.ID)
 			os.RemoveAll(container.root)
-			container.logEvent("destroy")
+			daemon.LogContainerEvent(container, "destroy")
 		}
 	}()
 
@@ -119,13 +119,10 @@ func (daemon *Daemon) rm(container *Container, forceRemove bool) (err error) {
 		logrus.Debugf("Unable to remove container from link graph: %s", err)
 	}
 
-	if err = daemon.driver.Remove(container.ID); err != nil {
+	metadata, err := daemon.layerStore.DeleteMount(container.ID)
+	layer.LogReleaseMetadata(metadata)
+	if err != nil {
 		return derr.ErrorCodeRmDriverFS.WithArgs(daemon.driver, container.ID, err)
-	}
-
-	initID := fmt.Sprintf("%s-init", container.ID)
-	if err := daemon.driver.Remove(initID); err != nil {
-		return derr.ErrorCodeRmInit.WithArgs(daemon.driver, initID, err)
 	}
 
 	if err = os.RemoveAll(container.root); err != nil {
@@ -140,7 +137,7 @@ func (daemon *Daemon) rm(container *Container, forceRemove bool) (err error) {
 	daemon.idIndex.Delete(container.ID)
 	daemon.containers.Delete(container.ID)
 
-	container.logEvent("destroy")
+	daemon.LogContainerEvent(container, "destroy")
 	return nil
 }
 
@@ -153,7 +150,7 @@ func (daemon *Daemon) VolumeRm(name string) error {
 		return err
 	}
 	if err := daemon.volumes.Remove(v); err != nil {
-		if err == store.ErrVolumeInUse {
+		if volumestore.IsInUse(err) {
 			return derr.ErrorCodeRmVolumeInUse.WithArgs(err)
 		}
 		return derr.ErrorCodeRmVolume.WithArgs(name, err)

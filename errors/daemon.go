@@ -46,6 +46,14 @@ var (
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
 
+	// ErrorCodePausedContainer is generated when we attempt to attach a
+	// container but its paused.
+	ErrorCodePausedContainer = errcode.Register(errGroup, errcode.ErrorDescriptor{
+		Value:          "CONTAINERPAUSED",
+		Message:        "Container %s is paused. Unpause the container before attach",
+		Description:    "The specified container is paused, unpause the container before attach",
+		HTTPStatusCode: http.StatusConflict,
+	})
 	// ErrorCodeAlreadyPaused is generated when we attempt to pause a
 	// container when its already paused.
 	ErrorCodeAlreadyPaused = errcode.Register(errGroup, errcode.ErrorDescriptor{
@@ -359,11 +367,11 @@ var (
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
 
-	// ErrorCodeVolumeInvalidMode is generated when we the mode of a volume/bind
+	// ErrorCodeVolumeInvalidMode is generated when the mode of a volume/bind
 	// mount is invalid.
 	ErrorCodeVolumeInvalidMode = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUMEINVALIDMODE",
-		Message:        "invalid mode: %s",
+		Message:        "invalid mode: %q",
 		Description:    "An invalid 'mode' was specified",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
@@ -372,7 +380,7 @@ var (
 	// volume specification isn't valid.
 	ErrorCodeVolumeInvalid = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUMEINVALID",
-		Message:        "Invalid volume specification: %s",
+		Message:        "Invalid volume specification: '%s'",
 		Description:    "An invalid 'volume' was specified in the mount request",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
@@ -380,7 +388,7 @@ var (
 	// ErrorCodeVolumeAbs is generated when path to a volume isn't absolute.
 	ErrorCodeVolumeAbs = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUMEABS",
-		Message:        "Invalid volume destination path: %s mount path must be absolute.",
+		Message:        "Invalid volume destination path: '%s' mount path must be absolute.",
 		Description:    "An invalid 'destination' path was specified in the mount request, it must be an absolute path",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
@@ -388,7 +396,7 @@ var (
 	// ErrorCodeVolumeName is generated when the name of named volume isn't valid.
 	ErrorCodeVolumeName = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUME_NAME_INVALID",
-		Message:        "%s includes invalid characters for a local volume name, only %s are allowed",
+		Message:        "%q includes invalid characters for a local volume name, only %q are allowed",
 		Description:    "The name of volume is invalid",
 		HTTPStatusCode: http.StatusBadRequest,
 	})
@@ -417,7 +425,7 @@ var (
 	// ErrorCodeVolumeSourceNotFound is generated the source directory could not be found (Windows specific)
 	ErrorCodeVolumeSourceNotFound = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUMESOURCENOTFOUND",
-		Message:        "Source directory '%s' could not be found: %v",
+		Message:        "Source directory '%s' could not be found: %s",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
 
@@ -431,7 +439,7 @@ var (
 	// ErrorCodeVolumeFromBlank is generated when path to a volume is blank.
 	ErrorCodeVolumeFromBlank = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUMEFROMBLANK",
-		Message:        "malformed volumes-from specification: %s",
+		Message:        "malformed volumes-from specification: %q",
 		Description:    "An invalid 'destination' path was specified in the mount request, it must not be blank",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
@@ -440,7 +448,7 @@ var (
 	// to the same path.
 	ErrorCodeVolumeDup = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUMEDUP",
-		Message:        "Duplicate bind mount %s",
+		Message:        "Duplicate bind mount '%s'",
 		Description:    "An attempt was made to mount a volume but the specified destination location is already used in a previous mount",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
@@ -449,7 +457,7 @@ var (
 	// for a volume mount was found. (Windows specific)
 	ErrorCodeVolumeNoSourceForMount = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUMENOSOURCEFORMOUNT",
-		Message:        "No source for mount name %q driver %q destination %s",
+		Message:        "No source for mount name '%s' driver %q destination '%s'",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
 
@@ -588,15 +596,6 @@ var (
 		Value:          "HOSTCONFIGSTART",
 		Message:        "Supplying a hostconfig on start is not supported. It should be supplied on create",
 		Description:    "The 'start' command does not accept 'HostConfig' data, try using the 'create' command instead",
-		HTTPStatusCode: http.StatusInternalServerError,
-	})
-
-	// ErrorCodeCantStart is generated when an error occurred while
-	// trying to start a container.
-	ErrorCodeCantStart = errcode.Register(errGroup, errcode.ErrorDescriptor{
-		Value:          "CANTSTART",
-		Message:        "Cannot start container %s: %s",
-		Description:    "There was an error while trying to start a container",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
 
@@ -833,15 +832,6 @@ var (
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
 
-	// ErrorCodeRmInit is generated when we try to delete a container
-	// but failed deleting its init filesystem.
-	ErrorCodeRmInit = errcode.Register(errGroup, errcode.ErrorDescriptor{
-		Value:          "RMINIT",
-		Message:        "Driver %s failed to remove init filesystem %s: %s",
-		Description:    "While trying to delete a container, the driver failed to remove the init filesystem",
-		HTTPStatusCode: http.StatusInternalServerError,
-	})
-
 	// ErrorCodeRmFS is generated when we try to delete a container
 	// but failed deleting its filesystem.
 	ErrorCodeRmFS = errcode.Register(errGroup, errcode.ErrorDescriptor{
@@ -918,8 +908,35 @@ var (
 	// trying to create a volume that has existed using different driver.
 	ErrorVolumeNameTaken = errcode.Register(errGroup, errcode.ErrorDescriptor{
 		Value:          "VOLUME_NAME_TAKEN",
-		Message:        "A volume name %s already exists with the %s driver. Choose a different volume name.",
+		Message:        "A volume named %q already exists with the %q driver. Choose a different volume name.",
 		Description:    "An attempt to create a volume using a driver but the volume already exists with a different driver",
+		HTTPStatusCode: http.StatusInternalServerError,
+	})
+
+	// ErrorCodeCmdNotFound is generated when container cmd can't start,
+	// container command not found error, exit code 127
+	ErrorCodeCmdNotFound = errcode.Register(errGroup, errcode.ErrorDescriptor{
+		Value:          "CMDNOTFOUND",
+		Message:        "Container command not found or does not exist.",
+		Description:    "Command could not be found, command does not exist",
+		HTTPStatusCode: http.StatusInternalServerError,
+	})
+
+	// ErrorCodeCmdCouldNotBeInvoked is generated when container cmd can't start,
+	// container command permission denied error, exit code 126
+	ErrorCodeCmdCouldNotBeInvoked = errcode.Register(errGroup, errcode.ErrorDescriptor{
+		Value:          "CMDCOULDNOTBEINVOKED",
+		Message:        "Container command could not be invoked.",
+		Description:    "Permission denied, cannot invoke command",
+		HTTPStatusCode: http.StatusInternalServerError,
+	})
+
+	// ErrorCodeCantStart is generated when container cmd can't start,
+	// for any reason other than above 2 errors
+	ErrorCodeCantStart = errcode.Register(errGroup, errcode.ErrorDescriptor{
+		Value:          "CANTSTART",
+		Message:        "Cannot start container %s: %s",
+		Description:    "There was an error while trying to start a container",
 		HTTPStatusCode: http.StatusInternalServerError,
 	})
 )

@@ -16,7 +16,7 @@ import (
 // Usage: docker events [OPTIONS]
 func (cli *DockerCli) CmdEvents(args ...string) error {
 	cmd := Cli.Subcmd("events", nil, Cli.DockerCommands["events"].Description, true)
-	since := cmd.String([]string{"#since", "-since"}, "", "Show all events created since timestamp")
+	since := cmd.String([]string{"-since"}, "", "Show all events created since timestamp")
 	until := cmd.String([]string{"-until"}, "", "Stream events until this timestamp")
 	flFilter := opts.NewListOpts(nil)
 	cmd.Var(&flFilter, []string{"f", "-filter"}, "Filter output based on conditions provided")
@@ -40,10 +40,18 @@ func (cli *DockerCli) CmdEvents(args ...string) error {
 	}
 	ref := time.Now()
 	if *since != "" {
-		v.Set("since", timeutils.GetTimestamp(*since, ref))
+		ts, err := timeutils.GetTimestamp(*since, ref)
+		if err != nil {
+			return err
+		}
+		v.Set("since", ts)
 	}
 	if *until != "" {
-		v.Set("until", timeutils.GetTimestamp(*until, ref))
+		ts, err := timeutils.GetTimestamp(*until, ref)
+		if err != nil {
+			return err
+		}
+		v.Set("until", ts)
 	}
 	if len(eventFilterArgs) > 0 {
 		filterJSON, err := filters.ToParam(eventFilterArgs)

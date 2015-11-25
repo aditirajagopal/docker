@@ -43,7 +43,7 @@ Requires: iptables
 Requires: libcgroup
 Requires: tar
 Requires: xz
-%if 0%{?fedora} >= 21
+%if 0%{?fedora} >= 21 || 0%{?centos} >= 7 || 0%{?rhel} >= 7 || 0%{?oraclelinux} >= 7
 # Resolves: rhbz#1165615
 Requires: device-mapper-libs >= 1.02.90-1
 %endif
@@ -56,6 +56,13 @@ Requires: device-mapper >= 1.02.90-2
 # docker-selinux conditional
 %if 0%{?fedora} >= 20 || 0%{?centos} >= 7 || 0%{?rhel} >= 7 || 0%{?oraclelinux} >= 7
 %global with_selinux 1
+%endif
+
+%if 0%{?_experimental}
+# yubico-piv-tool conditional
+%if 0%{?fedora} >= 20 || 0%{?centos} >= 7 || 0%{?rhel} >= 7
+Requires: yubico-piv-tool >= 1.1.0
+%endif
 %endif
 
 # start if with_selinux
@@ -84,6 +91,7 @@ Requires(pre): %{name}-selinux >= %{epoch}:%{version}-%{release}
 # conflicting packages
 Conflicts: docker
 Conflicts: docker-io
+Conflicts: docker-engine-cs
 
 %description
 Docker is an open source project to build, ship and run any application as a

@@ -19,6 +19,7 @@ Creates a new container.
       -a, --attach=[]               Attach to STDIN, STDOUT or STDERR
       --add-host=[]                 Add a custom host-to-IP mapping (host:ip)
       --blkio-weight=0              Block IO weight (relative weight)
+      --blkio-weight-device=""      Block IO weight (relative device weight, format: `DEVICE_NAME:WEIGHT`)
       --cpu-shares=0                CPU shares (relative weight)
       --cap-add=[]                  Add Linux capabilities
       --cap-drop=[]                 Drop Linux capabilities
@@ -48,7 +49,6 @@ Creates a new container.
       --link=[]                     Add link to another container
       --log-driver=""               Logging driver for container
       --log-opt=[]                  Log driver specific options
-      --lxc-conf=[]                 Add custom lxc options
       -m, --memory=""               Memory limit
       --mac-address=""              Container MAC address (e.g. 92:d0:c6:0a:29:33)
       --memory-reservation=""       Memory soft limit
@@ -65,6 +65,7 @@ Creates a new container.
       --restart="no"                Restart policy (no, on-failure[:max-retry], always, unless-stopped)
       --security-opt=[]             Security options
       --stop-signal="SIGTERM"       Signal to stop a container
+      --shm-size=[]                 Size of `/dev/shm`. The format is `<number><unit>`. `number` must be greater than `0`.  Unit is optional and can be `b` (bytes), `k` (kilobytes), `m` (megabytes), or `g` (gigabytes). If you omit the unit, the system uses bytes. If you omit the size entirely, the system uses `64m`.
       -t, --tty=false               Allocate a pseudo-TTY
       -u, --user=""                 Username or UID
       --ulimit=[]                   Ulimit options
@@ -83,7 +84,7 @@ This is useful when you want to set up a container configuration ahead of time
 so that it is ready to start when you need it. The initial status of the
 new container is `created`.
 
-Please see the [run command](run.md) section and the [Docker run reference](run.md) for more details.
+Please see the [run command](run.md) section and the [Docker run reference](../run.md) for more details.
 
 ## Examples
 

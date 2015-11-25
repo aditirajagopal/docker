@@ -17,8 +17,8 @@ func setPlatformSpecificContainerFields(container *Container, contJSONBase *type
 	return contJSONBase
 }
 
-// ContainerInspectPre120 gets containers for pre 1.20 APIs.
-func (daemon *Daemon) ContainerInspectPre120(name string) (*v1p19.ContainerJSON, error) {
+// containerInspectPre120 gets containers for pre 1.20 APIs.
+func (daemon *Daemon) containerInspectPre120(name string) (*v1p19.ContainerJSON, error) {
 	container, err := daemon.Get(name)
 	if err != nil {
 		return nil, err
@@ -40,19 +40,25 @@ func (daemon *Daemon) ContainerInspectPre120(name string) (*v1p19.ContainerJSON,
 	}
 
 	config := &v1p19.ContainerConfig{
-		container.Config,
-		container.Config.MacAddress,
-		container.Config.NetworkDisabled,
-		container.Config.ExposedPorts,
-		container.hostConfig.VolumeDriver,
-		container.hostConfig.Memory,
-		container.hostConfig.MemorySwap,
-		container.hostConfig.CPUShares,
-		container.hostConfig.CpusetCpus,
+		Config:          container.Config,
+		MacAddress:      container.Config.MacAddress,
+		NetworkDisabled: container.Config.NetworkDisabled,
+		ExposedPorts:    container.Config.ExposedPorts,
+		VolumeDriver:    container.hostConfig.VolumeDriver,
+		Memory:          container.hostConfig.Memory,
+		MemorySwap:      container.hostConfig.MemorySwap,
+		CPUShares:       container.hostConfig.CPUShares,
+		CPUSet:          container.hostConfig.CpusetCpus,
 	}
-	networkSettings := getBackwardsCompatibleNetworkSettings(container.NetworkSettings)
+	networkSettings := daemon.getBackwardsCompatibleNetworkSettings(container.NetworkSettings)
 
-	return &v1p19.ContainerJSON{base, volumes, volumesRW, config, networkSettings}, nil
+	return &v1p19.ContainerJSON{
+		ContainerJSONBase: base,
+		Volumes:           volumes,
+		VolumesRW:         volumesRW,
+		Config:            config,
+		NetworkSettings:   networkSettings,
+	}, nil
 }
 
 func addMountPoints(container *Container) []types.MountPoint {
