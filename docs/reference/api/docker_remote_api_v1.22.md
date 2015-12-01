@@ -1907,6 +1907,7 @@ Display system-wide information
     Content-Type: application/json
 
     {
+        "Architecture": "x86_64",
         "Containers": 11,
         "CpuCfsPeriod": true,
         "CpuCfsQuota": true,
@@ -1915,16 +1916,16 @@ Display system-wide information
         "DockerRootDir": "/var/lib/docker",
         "Driver": "btrfs",
         "DriverStatus": [[""]],
-	"Plugins": {
-		"Volume": [
-			"local"
-		],
-		"Network": [
-			"null",
-			"host",
-			"bridge"
-		]
-	},
+        "Plugins": {
+            "Volume": [
+                "local"
+            ],
+            "Network": [
+                "null",
+                "host",
+                "bridge"
+            ]
+        },
         "ExecutionDriver": "native-0.1",
         "ExperimentalBuild": false,
         "HttpProxy": "http://test:test@localhost:8080",
@@ -1948,6 +1949,7 @@ Display system-wide information
         "Name": "prod-server-42",
         "NoProxy": "9.81.1.160",
         "OomKillDisable": true,
+        "OSType": "linux",
         "OperatingSystem": "Boot2Docker",
         "RegistryConfig": {
             "IndexConfigs": {
