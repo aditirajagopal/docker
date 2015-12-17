@@ -5,6 +5,7 @@ package native
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/daemon/execdriver"
+	"github.com/docker/docker/daemon/execdriver/native/template"
 	"github.com/docker/docker/pkg/parsers"
 	"github.com/docker/docker/pkg/pools"
 	"github.com/docker/docker/pkg/reexec"
@@ -88,6 +90,7 @@ func NewDriver(root string, options []string) (*Driver, error) {
 			case "systemd":
 				if systemd.UseSystemd() {
 					cgm = libcontainer.SystemdCgroups
+					template.SystemdCgroups = true
 				} else {
 					// warn them that they chose the wrong driver
 					logrus.Warn("You cannot use systemd as native.cgroupdriver, using cgroupfs instead")
@@ -128,6 +131,13 @@ type execOutput struct {
 // it calls libcontainer APIs to run a container.
 func (d *Driver) Run(c *execdriver.Command, pipes *execdriver.Pipes, hooks execdriver.Hooks) (execdriver.ExitStatus, error) {
 	destroyed := false
+	var err error
+	c.TmpDir, err = ioutil.TempDir("", c.ID)
+	if err != nil {
+		return execdriver.ExitStatus{ExitCode: -1}, err
+	}
+	defer os.RemoveAll(c.TmpDir)
+
 	// take the Command and populate the libcontainer.Config from it
 	container, err := d.createContainer(c, hooks)
 	if err != nil {

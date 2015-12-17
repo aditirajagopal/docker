@@ -2,16 +2,15 @@ package client
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
 	"strings"
 
+	"github.com/docker/docker/api/client/lib"
 	"github.com/docker/docker/api/types"
 	Cli "github.com/docker/docker/cli"
-	"github.com/docker/docker/cliconfig"
 	flag "github.com/docker/docker/pkg/mflag"
 	"github.com/docker/docker/pkg/term"
 	"github.com/docker/docker/registry"
@@ -64,7 +63,7 @@ func (cli *DockerCli) CmdLogin(args ...string) error {
 
 	authconfig, ok := cli.configFile.AuthConfigs[serverAddress]
 	if !ok {
-		authconfig = cliconfig.AuthConfig{}
+		authconfig = types.AuthConfig{}
 	}
 
 	if username == "" {
@@ -120,24 +119,15 @@ func (cli *DockerCli) CmdLogin(args ...string) error {
 	authconfig.ServerAddress = serverAddress
 	cli.configFile.AuthConfigs[serverAddress] = authconfig
 
-	serverResp, err := cli.call("POST", "/auth", cli.configFile.AuthConfigs[serverAddress], nil)
-	if serverResp.statusCode == 401 {
-		delete(cli.configFile.AuthConfigs, serverAddress)
-		if err2 := cli.configFile.Save(); err2 != nil {
-			fmt.Fprintf(cli.out, "WARNING: could not save config file: %v\n", err2)
-		}
-		return err
-	}
+	auth := cli.configFile.AuthConfigs[serverAddress]
+	response, err := cli.client.RegistryLogin(auth)
 	if err != nil {
-		return err
-	}
-
-	defer serverResp.body.Close()
-
-	var response types.AuthResponse
-	if err := json.NewDecoder(serverResp.body).Decode(&response); err != nil {
-		// Upon error, remove entry
-		delete(cli.configFile.AuthConfigs, serverAddress)
+		if lib.IsErrUnauthorized(err) {
+			delete(cli.configFile.AuthConfigs, serverAddress)
+			if err2 := cli.configFile.Save(); err2 != nil {
+				fmt.Fprintf(cli.out, "WARNING: could not save config file: %v\n", err2)
+			}
+		}
 		return err
 	}
 

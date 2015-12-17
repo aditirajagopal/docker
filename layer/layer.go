@@ -1,6 +1,6 @@
 // Package layer is package for managing read only
 // and read-write mounts on the union file system
-// driver. Read-only mounts are refenced using a
+// driver. Read-only mounts are referenced using a
 // content hash and are protected from mutation in
 // the exposed interface. The tar format is used
 // to create read only layers and export both
@@ -151,6 +151,7 @@ type Store interface {
 	Unmount(id string) error
 	DeleteMount(id string) ([]Metadata, error)
 	Changes(id string) ([]archive.Change, error)
+	Metadata(id string) (map[string]string, error)
 }
 
 // MetadataTransaction represents functions for setting layer metadata
@@ -189,7 +190,7 @@ type MetadataStore interface {
 	GetInitID(string) (string, error)
 	GetMountParent(string) (ChainID, error)
 
-	// List returns the full list of referened
+	// List returns the full list of referenced
 	// read-only and read-write layers
 	List() ([]ChainID, []string, error)
 

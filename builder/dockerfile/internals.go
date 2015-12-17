@@ -20,6 +20,7 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/builder"
 	"github.com/docker/docker/builder/dockerfile/parser"
 	"github.com/docker/docker/daemon"
@@ -28,7 +29,7 @@ import (
 	"github.com/docker/docker/pkg/httputils"
 	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/pkg/jsonmessage"
-	"github.com/docker/docker/pkg/progressreader"
+	"github.com/docker/docker/pkg/progress"
 	"github.com/docker/docker/pkg/streamformatter"
 	"github.com/docker/docker/pkg/stringid"
 	"github.com/docker/docker/pkg/stringutils"
@@ -55,28 +56,23 @@ func (b *Builder) commit(id string, autoCmd *stringutils.StrSlice, comment strin
 		}
 		defer func(cmd *stringutils.StrSlice) { b.runConfig.Cmd = cmd }(cmd)
 
-		if hit, err := b.probeCache(); err != nil {
+		hit, err := b.probeCache()
+		if err != nil {
 			return err
 		} else if hit {
 			return nil
 		}
-		container, err := b.create()
+		id, err = b.create()
 		if err != nil {
 			return err
 		}
-		id = container.ID
-
-		if err := b.docker.Mount(container); err != nil {
-			return err
-		}
-		defer b.docker.Unmount(container)
 	}
 
 	// Note: Actually copy the struct
 	autoConfig := *b.runConfig
 	autoConfig.Cmd = autoCmd
 
-	commitCfg := &daemon.ContainerCommitConfig{
+	commitCfg := &types.ContainerCommitConfig{
 		Author: b.maintainer,
 		Pause:  true,
 		Config: &autoConfig,
@@ -87,8 +83,6 @@ func (b *Builder) commit(id string, autoCmd *stringutils.StrSlice, comment strin
 	if err != nil {
 		return err
 	}
-	b.docker.Retain(b.id, imageID)
-	b.activeImages = append(b.activeImages, imageID)
 	b.image = imageID
 	return nil
 }
@@ -191,11 +185,10 @@ func (b *Builder) runContextCommand(args []string, allowRemote bool, allowLocalD
 		return nil
 	}
 
-	container, _, err := b.docker.Create(b.runConfig, nil)
+	container, err := b.docker.ContainerCreate(&daemon.ContainerCreateConfig{Config: b.runConfig})
 	if err != nil {
 		return err
 	}
-	defer b.docker.Unmount(container)
 	b.tmpContainers[container.ID] = struct{}{}
 
 	comment := fmt.Sprintf("%s %s in %s", cmdName, origPaths, dest)
@@ -213,15 +206,12 @@ func (b *Builder) runContextCommand(args []string, allowRemote bool, allowLocalD
 	}
 
 	for _, info := range infos {
-		if err := b.docker.Copy(container, dest, info.FileInfo, info.decompress); err != nil {
+		if err := b.docker.BuilderCopy(container.ID, dest, info.FileInfo, info.decompress); err != nil {
 			return err
 		}
 	}
 
-	if err := b.commit(container.ID, cmd, comment); err != nil {
-		return err
-	}
-	return nil
+	return b.commit(container.ID, cmd, comment)
 }
 
 func (b *Builder) download(srcURL string) (fi builder.FileInfo, err error) {
@@ -263,17 +253,11 @@ func (b *Builder) download(srcURL string) (fi builder.FileInfo, err error) {
 		return
 	}
 
+	stdoutFormatter := b.Stdout.(*streamformatter.StdoutFormatter)
+	progressOutput := stdoutFormatter.StreamFormatter.NewProgressOutput(stdoutFormatter.Writer, true)
+	progressReader := progress.NewProgressReader(resp.Body, progressOutput, resp.ContentLength, "", "Downloading")
 	// Download and dump result to tmp file
-	if _, err = io.Copy(tmpFile, progressreader.New(progressreader.Config{
-		In: resp.Body,
-		// TODO: make progressreader streamformatter agnostic
-		Out:       b.Stdout.(*streamformatter.StdoutFormatter).Writer,
-		Formatter: b.Stdout.(*streamformatter.StdoutFormatter).StreamFormatter,
-		Size:      resp.ContentLength,
-		NewLines:  true,
-		ID:        "",
-		Action:    "Downloading",
-	})); err != nil {
+	if _, err = io.Copy(tmpFile, progressReader); err != nil {
 		tmpFile.Close()
 		return
 	}
@@ -419,8 +403,8 @@ func (b *Builder) processImageFrom(img *image.Image) error {
 	}
 
 	// The default path will be blank on Windows (set by HCS)
-	if len(b.runConfig.Env) == 0 && daemon.DefaultPathEnv != "" {
-		b.runConfig.Env = append(b.runConfig.Env, "PATH="+daemon.DefaultPathEnv)
+	if len(b.runConfig.Env) == 0 && system.DefaultPathEnv != "" {
+		b.runConfig.Env = append(b.runConfig.Env, "PATH="+system.DefaultPathEnv)
 	}
 
 	// Process ONBUILD triggers if they exist
@@ -485,16 +469,12 @@ func (b *Builder) probeCache() (bool, error) {
 	logrus.Debugf("[BUILDER] Use cached version: %s", b.runConfig.Cmd)
 	b.image = string(cache)
 
-	// TODO: remove once Commit can take a tag parameter.
-	b.docker.Retain(b.id, b.image)
-	b.activeImages = append(b.activeImages, b.image)
-
 	return true, nil
 }
 
-func (b *Builder) create() (*daemon.Container, error) {
+func (b *Builder) create() (string, error) {
 	if b.image == "" && !b.noBaseImage {
-		return nil, fmt.Errorf("Please provide a source image with `from` prior to run")
+		return "", fmt.Errorf("Please provide a source image with `from` prior to run")
 	}
 	b.runConfig.Image = b.image
 
@@ -520,12 +500,14 @@ func (b *Builder) create() (*daemon.Container, error) {
 	config := *b.runConfig
 
 	// Create the container
-	c, warnings, err := b.docker.Create(b.runConfig, hostConfig)
+	c, err := b.docker.ContainerCreate(&daemon.ContainerCreateConfig{
+		Config:     b.runConfig,
+		HostConfig: hostConfig,
+	})
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	defer b.docker.Unmount(c)
-	for _, warning := range warnings {
+	for _, warning := range c.Warnings {
 		fmt.Fprintf(b.Stdout, " ---> [Warning] %s\n", warning)
 	}
 
@@ -534,23 +516,24 @@ func (b *Builder) create() (*daemon.Container, error) {
 
 	if config.Cmd.Len() > 0 {
 		// override the entry point that may have been picked up from the base image
-		s := config.Cmd.Slice()
-		c.Path = s[0]
-		c.Args = s[1:]
+		if err := b.docker.ContainerUpdateCmd(c.ID, config.Cmd.Slice()); err != nil {
+			return "", err
+		}
 	}
 
-	return c, nil
+	return c.ID, nil
 }
 
-func (b *Builder) run(c *daemon.Container) error {
-	var errCh chan error
+func (b *Builder) run(cID string) (err error) {
+	errCh := make(chan error)
 	if b.Verbose {
-		errCh = c.Attach(nil, b.Stdout, b.Stderr)
-	}
-
-	//start the container
-	if err := b.docker.Start(c); err != nil {
-		return err
+		go func() {
+			errCh <- b.docker.ContainerWsAttachWithLogs(cID, &daemon.ContainerWsAttachWithLogsConfig{
+				OutStream: b.Stdout,
+				ErrStream: b.Stderr,
+				Stream:    true,
+			})
+		}()
 	}
 
 	finished := make(chan struct{})
@@ -558,12 +541,16 @@ func (b *Builder) run(c *daemon.Container) error {
 	go func() {
 		select {
 		case <-b.cancelled:
-			logrus.Debugln("Build cancelled, killing and removing container:", c.ID)
-			b.docker.Kill(c)
-			b.removeContainer(c.ID)
+			logrus.Debugln("Build cancelled, killing and removing container:", cID)
+			b.docker.ContainerKill(cID, 0)
+			b.removeContainer(cID)
 		case <-finished:
 		}
 	}()
+
+	if err := b.docker.ContainerStart(cID, nil); err != nil {
+		return err
+	}
 
 	if b.Verbose {
 		// Block on reading output from container, stop on err or chan closed
@@ -572,8 +559,7 @@ func (b *Builder) run(c *daemon.Container) error {
 		}
 	}
 
-	// Wait for it to finish
-	if ret, _ := c.WaitStop(-1 * time.Second); ret != 0 {
+	if ret, _ := b.docker.ContainerWait(cID, -1); ret != 0 {
 		// TODO: change error type, because jsonmessage.JSONError assumes HTTP
 		return &jsonmessage.JSONError{
 			Message: fmt.Sprintf("The command '%s' returned a non-zero code: %d", b.runConfig.Cmd.ToString(), ret),
@@ -585,11 +571,11 @@ func (b *Builder) run(c *daemon.Container) error {
 }
 
 func (b *Builder) removeContainer(c string) error {
-	rmConfig := &daemon.ContainerRmConfig{
+	rmConfig := &types.ContainerRmConfig{
 		ForceRemove:  true,
 		RemoveVolume: true,
 	}
-	if err := b.docker.Remove(c, rmConfig); err != nil {
+	if err := b.docker.ContainerRm(c, rmConfig); err != nil {
 		fmt.Fprintf(b.Stdout, "Error removing intermediate container %s: %v\n", stringid.TruncateID(c), err)
 		return err
 	}

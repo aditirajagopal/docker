@@ -36,7 +36,7 @@ type cgroupMemInfo struct {
 	// Whether soft limit is supported or not
 	MemoryReservation bool
 
-	// Whether OOM killer disalbe is supported or not
+	// Whether OOM killer disable is supported or not
 	OomKillDisable bool
 
 	// Whether memory swappiness is supported or not
@@ -63,6 +63,12 @@ type cgroupBlkioInfo struct {
 
 	// Whether Block IO weight_device is supported or not
 	BlkioWeightDevice bool
+
+	// Whether Block IO read limit in bytes per second is supported or not
+	BlkioReadBpsDevice bool
+
+	// Whether Block IO write limit in bytes per second is supported or not
+	BlkioWriteBpsDevice bool
 }
 
 type cgroupCpusetInfo struct {

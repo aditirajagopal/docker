@@ -21,6 +21,8 @@ docker-run - Run a command in a new container
 [**--cpuset-mems**[=*CPUSET-MEMS*]]
 [**-d**|**--detach**[=*false*]]
 [**--device**[=*[]*]]
+[**--device-read-bps**[=*[]*]]
+[**--device-write-bps**[=*[]*]]
 [**--dns**[=*[]*]]
 [**--dns-opt**[=*[]*]]
 [**--dns-search**[=*[]*]]
@@ -33,6 +35,7 @@ docker-run - Run a command in a new container
 [**--help**]
 [**-i**|**--interactive**[=*false*]]
 [**--ipc**[=*IPC*]]
+[**--isolation**[=*default*]]
 [**--kernel-memory**[=*KERNEL-MEMORY*]]
 [**-l**|**--label**[=*[]*]]
 [**--label-file**[=*[]*]]
@@ -47,6 +50,7 @@ docker-run - Run a command in a new container
 [**--name**[=*NAME*]]
 [**--net**[=*"bridge"*]]
 [**--oom-kill-disable**[=*false*]]
+[**--oom-score-adj**[=*0*]]
 [**-P**|**--publish-all**[=*false*]]
 [**-p**|**--publish**[=*[]*]]
 [**--pid**[=*[]*]]
@@ -59,10 +63,12 @@ docker-run - Run a command in a new container
 [**--shm-size**[=*[]*]]
 [**--sig-proxy**[=*true*]]
 [**-t**|**--tty**[=*false*]]
+[**--tmpfs**[=*[CONTAINER-DIR[:<OPTIONS>]*]]
 [**-u**|**--user**[=*USER*]]
-[**-v**|**--volume**[=*[]*]]
 [**--ulimit**[=*[]*]]
 [**--uts**[=*[]*]]
+[**-v**|**--volume**[=*[[HOST-DIR:]CONTAINER-DIR[:OPTIONS]]*]]
+[**--volume-driver**[=*DRIVER*]]
 [**--volumes-from**[=*[]*]]
 [**-w**|**--workdir**[=*WORKDIR*]]
 IMAGE [COMMAND] [ARG...]
@@ -188,6 +194,12 @@ stopping the process by pressing the keys CTRL-P CTRL-Q.
 **--device**=[]
    Add a host device to the container (e.g. --device=/dev/sdc:/dev/xvdc:rwm)
 
+**--device-read-bps**=[]
+   Limit read rate from a device (e.g. --device-read-bps=/dev/sda:1mb)
+
+**--device-write-bps**=[]
+   Limit write rate to a device (e.g. --device-write-bps=/dev/sda:1mb)
+
 **--dns-search**=[]
    Set custom DNS search domains (Use --dns-search=. if you don't wish to set the search domain)
 
@@ -252,6 +264,9 @@ redirection on the host system.
    Default is to create a private IPC namespace (POSIX SysV IPC) for the container
                                'container:<name|id>': reuses another container shared memory, semaphores and message queues
                                'host': use the host shared memory,semaphores and message queues inside the container.  Note: the host mode gives the container full access to local shared memory and is therefore considered insecure.
+
+**--isolation**="*default*"
+   Isolation specifies the type of isolation technology used by containers.
 
 **-l**, **--label**=[]
    Set metadata on the container (e.g., --label com.example.key=value)
@@ -333,13 +348,17 @@ and foreground Docker containers.
 
 **--net**="*bridge*"
    Set the Network mode for the container
-                               'bridge': creates a new network stack for the container on the docker bridge
-                               'none': no networking for this container
-                               'container:<name|id>': reuses another container network stack
-                               'host': use the host network stack inside the container.  Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure.
+                               'bridge': create a network stack on the default Docker bridge
+                               'none': no networking
+                               'container:<name|id>': reuse another container's network stack
+                               'host': use the Docker host network stack. Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure.
+                               '<network-name>|<network-id>': connect to a user-defined network
 
 **--oom-kill-disable**=*true*|*false*
    Whether to disable OOM Killer for the container or not.
+
+**--oom-score-adj**=""
+   Tune the host's OOM preferences for containers (accepts -1000 to 1000)
 
 **-P**, **--publish-all**=*true*|*false*
    Publish all exposed ports to random ports on the host interfaces. The default is *false*.
@@ -432,6 +451,20 @@ interactive shell. The default is false.
 The **-t** option is incompatible with a redirection of the docker client
 standard input.
 
+**--tmpfs**=[] Create a tmpfs mount
+
+   Mount a temporary filesystem (`tmpfs`) mount into a container, for example:
+
+   $ docker run -d --tmpfs /tmp:rw,size=787448k,mode=1777 my_image
+
+   This command mounts a `tmpfs` at `/tmp` within the container. The mount copies
+the underlying content of `my_image` into `/tmp`. For example if there was a
+directory `/tmp/content` in the base image, docker will copy this directory and
+all of its content on top of the tmpfs mounted on `/tmp`.  The supported mount
+options are the same as the Linux default `mount` flags. If you do not specify
+any options, the systems uses the following options:
+`rw,noexec,nosuid,nodev,size=65536k`.
+
 **-u**, **--user**=""
    Sets the username or UID used and optionally the groupname or GID for the specified command.
 
@@ -443,24 +476,34 @@ standard input.
 **--ulimit**=[]
     Ulimit options
 
-**-v**, **--volume**=[] Create a bind mount
-   (format: `[host-dir:]container-dir[:<suffix options>]`, where suffix options
-are comma delimited and selected from [rw|ro] and [z|Z].)
+**-v**|**--volume**[=*[[HOST-DIR:]CONTAINER-DIR[:OPTIONS]]*]
+   Create a bind mount. If you specify, ` -v /HOST-DIR:/CONTAINER-DIR`, Docker
+   bind mounts `/HOST-DIR` in the host to `/CONTAINER-DIR` in the Docker
+   container. If 'HOST-DIR' is omitted,  Docker automatically creates the new
+   volume on the host.  The `OPTIONS` are a comma delimited list and can be:
 
-   (e.g., using -v /host-dir:/container-dir, bind mounts /host-dir in the
-host to /container-dir in the Docker container)
+   * [rw|ro]
+   * [z|Z]
+   * [`[r]shared`|`[r]slave`|`[r]private`]
 
-   If 'host-dir' is missing, then docker automatically creates the new volume
-on the host. **This auto-creation of the host path has been deprecated in
-Release: v1.9.**
+The `CONTAINER-DIR` must be an absolute path such as `/src/docs`. The `HOST-DIR`
+can be an absolute path or a `name` value. A `name` value must start with an
+alphanumeric character, followed by `a-z0-9`, `_` (underscore), `.` (period) or
+`-` (hyphen). An absolute path starts with a `/` (forward slash).
 
-   The **-v** option can be used one or
-more times to add one or more mounts to a container. These mounts can then be
-used in other containers using the **--volumes-from** option.
+If you supply a `HOST-DIR` that is an absolute path,  Docker bind-mounts to the
+path you specify. If you supply a `name`, Docker creates a named volume by that
+`name`. For example, you can specify either `/foo` or `foo` for a `HOST-DIR`
+value. If you supply the `/foo` value, Docker creates a bind-mount. If you
+supply the `foo` specification, Docker creates a named volume.
 
-   The volume may be optionally suffixed with :ro or :rw to mount the volumes in
-read-only or read-write mode, respectively. By default, the volumes are mounted
-read-write. See examples.
+You can specify multiple  **-v** options to mount one or more mounts to a
+container. To use these same mounts in other containers, specify the
+**--volumes-from** option also.
+
+You can add `:ro` or `:rw` suffix to a volume to mount it  read-only or
+read-write mode, respectively. By default, the volumes are mounted read-write.
+See examples.
 
 Labeling systems like SELinux require that proper labels are placed on volume
 content mounted into a container. Without a label, the security system might
@@ -475,18 +518,41 @@ content label. Shared volume labels allow all containers to read/write content.
 The `Z` option tells Docker to label the content with a private unshared label.
 Only the current container can use a private volume.
 
-The `container-dir` must always be an absolute path such as `/src/docs`.
-The `host-dir` can either be an absolute path or a `name` value. If you
-supply an absolute path for the `host-dir`, Docker bind-mounts to the path
-you specify. If you supply a `name`, Docker creates a named volume by that `name`.
+By default bind mounted volumes are `private`. That means any mounts done
+inside container will not be visible on host and vice-a-versa. One can change
+this behavior by specifying a volume mount propagation property. Making a
+volume `shared` mounts done under that volume inside container will be
+visible on host and vice-a-versa. Making a volume `slave` enables only one
+way mount propagation and that is mounts done on host under that volume
+will be visible inside container but not the other way around.
 
-A `name` value must start with start with an alphanumeric character,
-followed by `a-z0-9`, `_` (underscore), `.` (period) or `-` (hyphen).
-An absolute path starts with a `/` (forward slash).
+To control mount propagation property of volume one can use `:[r]shared`,
+`:[r]slave` or `:[r]private` propagation flag. Propagation property can
+be specified only for bind mounted volumes and not for internal volumes or
+named volumes. For mount propagation to work source mount point (mount point
+where source dir is mounted on) has to have right propagation properties. For
+shared volumes, source mount point has to be shared. And for slave volumes,
+source mount has to be either shared or slave.
 
-For example, you can specify either `/foo` or `foo` for a `host-dir` value.
-If you supply the `/foo` value, Docker creates a bind-mount. If you supply
-the `foo` specification, Docker creates a named volume.
+Use `df <source-dir>` to figure out the source mount and then use
+`findmnt -o TARGET,PROPAGATION <source-mount-dir>` to figure out propagation
+properties of source mount. If `findmnt` utility is not available, then one
+can look at mount entry for source mount point in `/proc/self/mountinfo`. Look
+at `optional fields` and see if any propagaion properties are specified.
+`shared:X` means mount is `shared`, `master:X` means mount is `slave` and if
+nothing is there that means mount is `private`.
+
+To change propagation properties of a mount point use `mount` command. For
+example, if one wants to bind mount source directory `/foo` one can do
+`mount --bind /foo /foo` and `mount --make-private --make-shared /foo`. This
+will convert /foo into a `shared` mount point. Alternatively one can directly
+change propagation properties of source mount. Say `/` is source mount for
+`/foo`, then use `mount --make-shared /` to convert `/` into a `shared` mount.
+
+**--volume-driver**=""
+   Container's volume driver. This driver creates volumes specified either from
+   a Dockerfile's `VOLUME` instruction or from the `docker run -v` flag.
+   See **docker-volume-create(1)** for full details.
 
 **--volumes-from**=[]
    Mount volumes from the specified container(s)
@@ -547,6 +613,19 @@ the exit codes follow the `chroot` standard, see below:
     # 3
 
 # EXAMPLES
+
+## Running container in read-only mode
+
+During container image development, containers often need to write to the image
+content.  Installing packages into /usr, for example.  In production,
+applications seldom need to write to the image.  Container applications write
+to volumes if they need to write to file systems at all.  Applications can be
+made more secure by running them in read-only mode using the --read-only switch.
+This protects the containers image from modification. Read only containers may
+still need to write temporary data.  The best way to handle this is to mount
+tmpfs directories on /run and /tmp.
+
+    # docker run --read-only --tmpfs /run --tmpfs /tmp -i -t fedora /bin/bash
 
 ## Exposing log messages from the container to the host's log
 
@@ -771,6 +850,38 @@ If you want to set `/dev/sda` device weight to `200`, you can specify the device
 weight by `--blkio-weight-device` flag. Use the following command:
 
    # docker run -it --blkio-weight-device "/dev/sda:200" ubuntu
+
+## Specify isolation technology for container (--isolation)
+
+This option is useful in situations where you are running Docker containers on
+Microsoft Windows. The `--isolation <value>` option sets a container's isolation
+technology. On Linux, the only supported is the `default` option which uses
+Linux namespaces. These two commands are equivalent on Linux:
+
+```
+$ docker run -d busybox top
+$ docker run -d --isolation default busybox top
+```
+
+On Microsoft Windows, can take any of these values:
+
+* `default`: Use the value specified by the Docker daemon's `--exec-opt` . If the `daemon` does not specify an isolation technology, Microsoft Windows uses `process` as its default value.
+* `process`: Namespace isolation only.
+* `hyperv`: Hyper-V hypervisor partition-based isolation.
+
+In practice, when running on Microsoft Windows without a `daemon` option set,  these two commands are equivalent:
+
+```
+$ docker run -d --isolation default busybox top
+$ docker run -d --isolation process busybox top
+```
+
+If you have set the `--exec-opt isolation=hyperv` option on the Docker `daemon`, any of these commands also result in `hyperv` isolation:
+
+```
+$ docker run -d --isolation default busybox top
+$ docker run -d --isolation hyperv busybox top
+```
 
 # HISTORY
 April 2014, Originally compiled by William Henry (whenry at redhat dot com)

@@ -418,12 +418,12 @@ func (ls *layerStore) saveMount(mount *mountedLayer) error {
 func (ls *layerStore) initMount(graphID, parent, mountLabel string, initFunc MountInit) (string, error) {
 	// Use "<graph-id>-init" to maintain compatibility with graph drivers
 	// which are expecting this layer with this special name. If all
-	// graph drivers can be updated to not rely on knowin about this layer
+	// graph drivers can be updated to not rely on knowing about this layer
 	// then the initID should be randomly generated.
 	initID := fmt.Sprintf("%s-init", graphID)
 
 	if err := ls.driver.Create(initID, parent, mountLabel); err != nil {
-
+		return "", err
 	}
 	p, err := ls.driver.Get(initID, "")
 	if err != nil {
@@ -619,6 +619,17 @@ func (ls *layerStore) assembleTar(graphID string, metadata io.ReadCloser, size *
 		pW.Close()
 	}()
 	return pR, nil
+}
+
+// Metadata returns the low level metadata from the mount with the given name
+func (ls *layerStore) Metadata(name string) (map[string]string, error) {
+	ls.mountL.Lock()
+	m := ls.mounts[name]
+	ls.mountL.Unlock()
+	if m == nil {
+		return nil, ErrMountDoesNotExist
+	}
+	return ls.driver.GetMetadata(m.mountID)
 }
 
 type naiveDiffPathDriver struct {

@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/api/server/httputils"
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/errors"
+	"github.com/docker/docker/pkg/authorization"
 	"github.com/docker/docker/pkg/version"
 	"golang.org/x/net/context"
 )
@@ -21,23 +22,12 @@ import (
 // Any function that has the appropriate signature can be register as a middleware.
 type middleware func(handler httputils.APIFunc) httputils.APIFunc
 
-// loggingMiddleware logs each request when logging is enabled.
-func (s *Server) loggingMiddleware(handler httputils.APIFunc) httputils.APIFunc {
-	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-		if s.cfg.Logging {
-			logrus.Infof("%s %s", r.Method, r.RequestURI)
-		}
-		return handler(ctx, w, r, vars)
-	}
-}
-
 // debugRequestMiddleware dumps the request to logger
-// This is implemented separately from `loggingMiddleware` so that we don't have to
-// check the logging level or have httputil.DumpRequest called on each request.
-// Instead the middleware is only injected when the logging level is set to debug
-func (s *Server) debugRequestMiddleware(handler httputils.APIFunc) httputils.APIFunc {
+func debugRequestMiddleware(handler httputils.APIFunc) httputils.APIFunc {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-		if s.cfg.Logging && r.Method == "POST" {
+		logrus.Debugf("%s %s", r.Method, r.RequestURI)
+
+		if r.Method == "POST" {
 			if err := httputils.CheckForJSON(r); err == nil {
 				var buf bytes.Buffer
 				if _, err := buf.ReadFrom(r.Body); err == nil {
@@ -53,7 +43,37 @@ func (s *Server) debugRequestMiddleware(handler httputils.APIFunc) httputils.API
 				}
 			}
 		}
+
 		return handler(ctx, w, r, vars)
+	}
+}
+
+// authorizationMiddleware perform authorization on the request.
+func (s *Server) authorizationMiddleware(handler httputils.APIFunc) httputils.APIFunc {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+		// User and UserAuthNMethod are taken from AuthN plugins
+		// Currently tracked in https://github.com/docker/docker/pull/13994
+		user := ""
+		userAuthNMethod := ""
+		authCtx := authorization.NewCtx(s.authZPlugins, user, userAuthNMethod, r.Method, r.RequestURI)
+
+		if err := authCtx.AuthZRequest(w, r); err != nil {
+			logrus.Errorf("AuthZRequest for %s %s returned error: %s", r.Method, r.RequestURI, err)
+			return err
+		}
+
+		rw := authorization.NewResponseModifier(w)
+
+		if err := handler(ctx, rw, r, vars); err != nil {
+			logrus.Errorf("Handler for %s %s returned error: %s", r.Method, r.RequestURI, err)
+			return err
+		}
+
+		if err := authCtx.AuthZResponse(rw, r); err != nil {
+			logrus.Errorf("AuthZResponse for %s %s returned error: %s", r.Method, r.RequestURI, err)
+			return err
+		}
+		return nil
 	}
 }
 
@@ -101,14 +121,14 @@ func versionMiddleware(handler httputils.APIFunc) httputils.APIFunc {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 		apiVersion := version.Version(vars["version"])
 		if apiVersion == "" {
-			apiVersion = api.Version
+			apiVersion = api.DefaultVersion
 		}
 
-		if apiVersion.GreaterThan(api.Version) {
-			return errors.ErrorCodeNewerClientVersion.WithArgs(apiVersion, api.Version)
+		if apiVersion.GreaterThan(api.DefaultVersion) {
+			return errors.ErrorCodeNewerClientVersion.WithArgs(apiVersion, api.DefaultVersion)
 		}
 		if apiVersion.LessThan(api.MinVersion) {
-			return errors.ErrorCodeOldClientVersion.WithArgs(apiVersion, api.Version)
+			return errors.ErrorCodeOldClientVersion.WithArgs(apiVersion, api.DefaultVersion)
 		}
 
 		w.Header().Set("Server", "Docker/"+dockerversion.Version+" ("+runtime.GOOS+")")
@@ -119,7 +139,7 @@ func versionMiddleware(handler httputils.APIFunc) httputils.APIFunc {
 
 // handleWithGlobalMiddlwares wraps the handler function for a request with
 // the server's global middlewares. The order of the middlewares is backwards,
-// meaning that the first in the list will be evaludated last.
+// meaning that the first in the list will be evaluated last.
 //
 // Example: handleWithGlobalMiddlewares(s.getContainersName)
 //
@@ -136,14 +156,16 @@ func (s *Server) handleWithGlobalMiddlewares(handler httputils.APIFunc) httputil
 		versionMiddleware,
 		s.corsMiddleware,
 		s.userAgentMiddleware,
-		s.loggingMiddleware,
 	}
 
 	// Only want this on debug level
-	// this is separate from the logging middleware so that we can do this check here once,
-	// rather than for each request.
-	if logrus.GetLevel() == logrus.DebugLevel {
-		middlewares = append(middlewares, s.debugRequestMiddleware)
+	if s.cfg.Logging && logrus.GetLevel() == logrus.DebugLevel {
+		middlewares = append(middlewares, debugRequestMiddleware)
+	}
+
+	if len(s.cfg.AuthZPluginNames) > 0 {
+		s.authZPlugins = authorization.NewPlugins(s.cfg.AuthZPluginNames)
+		middlewares = append(middlewares, s.authorizationMiddleware)
 	}
 
 	h := handler

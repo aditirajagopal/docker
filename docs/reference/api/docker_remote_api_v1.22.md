@@ -57,7 +57,21 @@ List containers
                          "com.example.version": "1.0"
                  },
                  "SizeRw": 12288,
-                 "SizeRootFs": 0
+                 "SizeRootFs": 0,
+                 "NetworkSettings": {
+                         "Networks": {
+                                 "bridge": {
+                                          "EndpointID": "2cdc4edb1ded3631c81f57966563e5c8525b81121bb3706a9a9a3ae102711f3f",
+                                          "Gateway": "172.17.0.1",
+                                          "IPAddress": "172.17.0.2",
+                                          "IPPrefixLen": 16,
+                                          "IPv6Gateway": "",
+                                          "GlobalIPv6Address": "",
+                                          "GlobalIPv6PrefixLen": 0,
+                                          "MacAddress": "02:42:ac:11:00:02"
+                                  }
+                         }
+                 }
          },
          {
                  "Id": "9cd87474be90",
@@ -70,7 +84,22 @@ List containers
                  "Ports": [],
                  "Labels": {},
                  "SizeRw": 12288,
-                 "SizeRootFs": 0
+                 "SizeRootFs": 0,
+                 "NetworkSettings": {
+                         "Networks": {
+                                 "bridge": {
+                                          "EndpointID": "88eaed7b37b38c2a3f0c4bc796494fdf51b270c2d22656412a2ca5d559a64d7a",
+                                          "Gateway": "172.17.0.1",
+                                          "IPAddress": "172.17.0.8",
+                                          "IPPrefixLen": 16,
+                                          "IPv6Gateway": "",
+                                          "GlobalIPv6Address": "",
+                                          "GlobalIPv6PrefixLen": 0,
+                                          "MacAddress": "02:42:ac:11:00:08"
+                                  }
+                         }
+                 }
+
          },
          {
                  "Id": "3176a2479c92",
@@ -83,7 +112,22 @@ List containers
                  "Ports":[],
                  "Labels": {},
                  "SizeRw":12288,
-                 "SizeRootFs":0
+                 "SizeRootFs":0,
+                 "NetworkSettings": {
+                         "Networks": {
+                                 "bridge": {
+                                          "EndpointID": "8b27c041c30326d59cd6e6f510d4f8d1d570a228466f956edf7815508f78e30d",
+                                          "Gateway": "172.17.0.1",
+                                          "IPAddress": "172.17.0.6",
+                                          "IPPrefixLen": 16,
+                                          "IPv6Gateway": "",
+                                          "GlobalIPv6Address": "",
+                                          "GlobalIPv6PrefixLen": 0,
+                                          "MacAddress": "02:42:ac:11:00:06"
+                                  }
+                         }
+                 }
+
          },
          {
                  "Id": "4cb07b47f9fb",
@@ -96,7 +140,22 @@ List containers
                  "Ports": [],
                  "Labels": {},
                  "SizeRw": 12288,
-                 "SizeRootFs": 0
+                 "SizeRootFs": 0,
+                 "NetworkSettings": {
+                         "Networks": {
+                                 "bridge": {
+                                          "EndpointID": "d91c7b2f0644403d7ef3095985ea0e2370325cd2332ff3a3225c4247328e66e9",
+                                          "Gateway": "172.17.0.1",
+                                          "IPAddress": "172.17.0.5",
+                                          "IPPrefixLen": 16,
+                                          "IPv6Gateway": "",
+                                          "GlobalIPv6Address": "",
+                                          "GlobalIPv6PrefixLen": 0,
+                                          "MacAddress": "02:42:ac:11:00:05"
+                                  }
+                         }
+                 }
+
          }
     ]
 
@@ -188,8 +247,11 @@ Create a container
              "CpusetMems": "0,1",
              "BlkioWeight": 300,
              "BlkioWeightDevice": [{}],
+             "BlkioDeviceReadBps": [{}],
+             "BlkioDeviceWriteBps": [{}],
              "MemorySwappiness": 60,
              "OomKillDisable": false,
+             "OomScoreAdj": 500,
              "PortBindings": { "22/tcp": [{ "HostPort": "11022" }] },
              "PublishAllPorts": false,
              "Privileged": false,
@@ -243,9 +305,14 @@ Json Parameters:
 -   **CpusetCpus** - String value containing the `cgroups CpusetCpus` to use.
 -   **CpusetMems** - Memory nodes (MEMs) in which to allow execution (0-3, 0,1). Only effective on NUMA systems.
 -   **BlkioWeight** - Block IO weight (relative weight) accepts a weight value between 10 and 1000.
- -   **BlkioWeightDevice** - Block IO weight (relative device weight) in the form of:        `"BlkioWeightDevice": [{"Path": "device_path", "Weight": weight}]`
+-   **BlkioWeightDevice** - Block IO weight (relative device weight) in the form of:        `"BlkioWeightDevice": [{"Path": "device_path", "Weight": weight}]`
+-   **BlkioDeviceReadBps** - Limit read rate from a device in form of:	`"BlkioDeviceReadBps": [{"Path": "device_path", "Rate": rate}]`, for example:
+	`"BlkioDeviceReadBps": [{"Path": "/dev/sda", "Rate": "1024"}]"`
+-   **BlkioDeviceWriteBps** - Limit write rate to a device in the form of:	`"BlkioDeviceWriteBps": [{"Path": "device_path", "Rate": rate}]`, for example:
+	`"BlkioDeviceWriteBps": [{"Path": "/dev/sda", "Rate": "1024"}]"`
 -   **MemorySwappiness** - Tune a container's memory swappiness behavior. Accepts an integer between 0 and 100.
 -   **OomKillDisable** - Boolean value, whether to disable OOM Killer for the container or not.
+-   **OomScoreAdj** - An integer value containing the score given to the container in order to tune OOM killer preferences.
 -   **AttachStdin** - Boolean value, attaches to `stdin`.
 -   **AttachStdout** - Boolean value, attaches to `stdout`.
 -   **AttachStderr** - Boolean value, attaches to `stderr`.
@@ -396,6 +463,8 @@ Return low-level information on the container `id`
 			"Binds": null,
 			"BlkioWeight": 0,
 			"BlkioWeightDevice": [{}],
+			"BlkioDeviceReadBps": [{}],
+			"BlkioDeviceWriteBps": [{}],
 			"CapAdd": null,
 			"CapDrop": null,
 			"ContainerIDFile": "",
@@ -416,6 +485,7 @@ Return low-level information on the container `id`
 			"MemoryReservation": 0,
 			"KernelMemory": 0,
 			"OomKillDisable": false,
+			"OomScoreAdj": 500,
 			"NetworkMode": "bridge",
 			"PortBindings": {},
 			"Privileged": false,
@@ -1519,6 +1589,7 @@ Query Parameters:
 
 -   **fromImage** – Name of the image to pull. The name may include a tag or
         digest. This parameter may only be used when pulling an image.
+        The pull is cancelled if the HTTP connection is closed.
 -   **fromSrc** – Source to import.  The value may be a URL from which the image
         can be retrieved or `-` to read the image from the request body.
         This parameter may only be used when importing an image.
@@ -1529,7 +1600,24 @@ Query Parameters:
 
     Request Headers:
 
--   **X-Registry-Auth** – base64-encoded AuthConfig object
+-   **X-Registry-Auth** – base64-encoded AuthConfig object, containing either login information, or a token
+    - Credential based login:
+
+        ```
+    {
+            "username": "jdoe",
+            "password": "secret",
+            "email": "jdoe@acme.com",
+    }
+        ```
+
+    - Token based login:
+
+        ```
+    {
+            "registrytoken": "9cbaf023786cd7..."
+    }
+        ```
 
 Status Codes:
 
@@ -1727,6 +1815,8 @@ If you wish to push an image on to a private registry, that image must already h
 into a repository which references that registry `hostname` and `port`.  This repository name should
 then be used in the URL. This duplicates the command line's flow.
 
+The push is cancelled if the HTTP connection is closed.
+
 **Example request**:
 
     POST /images/registry.acme.com:5000/test/push HTTP/1.1
@@ -1738,8 +1828,24 @@ Query Parameters:
 
 Request Headers:
 
--   **X-Registry-Auth** – Include a base64-encoded AuthConfig.
-        object.
+-   **X-Registry-Auth** – base64-encoded AuthConfig object, containing either login information, or a token
+    - Credential based login:
+
+        ```
+    {
+            "username": "jdoe",
+            "password": "secret",
+            "email": "jdoe@acme.com",
+    }
+        ```
+
+    - Token based login:
+
+        ```
+    {
+            "registrytoken": "9cbaf023786cd7..."
+    }
+        ```
 
 Status Codes:
 
@@ -1950,6 +2056,7 @@ Display system-wide information
         "NoProxy": "9.81.1.160",
         "OomKillDisable": true,
         "OSType": "linux",
+        "OomScoreAdj": 500,
         "OperatingSystem": "Boot2Docker",
         "RegistryConfig": {
             "IndexConfigs": {
@@ -1990,14 +2097,15 @@ Show the docker version information
     Content-Type: application/json
 
     {
-         "Version": "1.5.0",
+         "Version": "1.10.0-dev",
          "Os": "linux",
-         "KernelVersion": "3.18.5-tinycore64",
-         "GoVersion": "go1.4.1",
-         "GitCommit": "a8a31ef",
+         "KernelVersion": "3.19.0-23-generic",
+         "GoVersion": "go1.4.2",
+         "GitCommit": "e75da4b",
          "Arch": "amd64",
-         "ApiVersion": "1.20",
-         "Experimental": false
+         "ApiVersion": "1.22",
+         "BuildTime": "2015-12-01T07:09:13.444803460+00:00",
+         "Experimental": true
     }
 
 Status Codes:
@@ -2785,13 +2893,13 @@ Content-Type: application/json
 Status Codes:
 
 - **201** - no error
-- **404** - driver not found
+- **404** - plugin not found
 - **500** - server error
 
 JSON Parameters:
 
 - **Name** - The new network's name. this is a mandatory field
-- **Driver** - Name of the network driver to use. Defaults to `bridge` driver
+- **Driver** - Name of the network driver plugin to use. Defaults to `bridge` driver
 - **IPAM** - Optional custom IP scheme for the network
 - **Options** - Network specific options to be used by the drivers
 - **CheckDuplicate** - Requests daemon to check for networks with same name

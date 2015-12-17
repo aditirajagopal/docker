@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/docker/docker/daemon/network"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/libnetwork"
 )
 
@@ -18,7 +18,7 @@ const (
 )
 
 // NetworkControllerEnabled checks if the networking stack is enabled.
-// This feature depends on OS primitives and it's dissabled in systems like Windows.
+// This feature depends on OS primitives and it's disabled in systems like Windows.
 func (daemon *Daemon) NetworkControllerEnabled() bool {
 	return daemon.netController != nil
 }
@@ -130,7 +130,7 @@ func getIpamConfig(data []network.IPAMConfig) ([]*libnetwork.IpamConf, []*libnet
 // network. If either cannot be found, an err is returned. If the
 // network cannot be set up, an err is returned.
 func (daemon *Daemon) ConnectContainerToNetwork(containerName, networkName string) error {
-	container, err := daemon.Get(containerName)
+	container, err := daemon.GetContainer(containerName)
 	if err != nil {
 		return err
 	}
@@ -140,11 +140,11 @@ func (daemon *Daemon) ConnectContainerToNetwork(containerName, networkName strin
 // DisconnectContainerFromNetwork disconnects the given container from
 // the given network. If either cannot be found, an err is returned.
 func (daemon *Daemon) DisconnectContainerFromNetwork(containerName string, network libnetwork.Network) error {
-	container, err := daemon.Get(containerName)
+	container, err := daemon.GetContainer(containerName)
 	if err != nil {
 		return err
 	}
-	return container.DisconnectFromNetwork(network)
+	return daemon.DisconnectFromNetwork(container, network)
 }
 
 // GetNetworkDriverList returns the list of plugins drivers

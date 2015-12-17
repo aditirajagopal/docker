@@ -3,43 +3,34 @@ package client
 import (
 	"archive/tar"
 	"bufio"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 
-	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/builder/dockerignore"
 	Cli "github.com/docker/docker/cli"
 	"github.com/docker/docker/opts"
 	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/fileutils"
+	"github.com/docker/docker/pkg/gitutils"
 	"github.com/docker/docker/pkg/httputils"
 	"github.com/docker/docker/pkg/jsonmessage"
 	flag "github.com/docker/docker/pkg/mflag"
-	"github.com/docker/docker/pkg/progressreader"
+	"github.com/docker/docker/pkg/progress"
 	"github.com/docker/docker/pkg/streamformatter"
 	"github.com/docker/docker/pkg/ulimit"
-	"github.com/docker/docker/pkg/units"
 	"github.com/docker/docker/pkg/urlutil"
-	"github.com/docker/docker/registry"
-	"github.com/docker/docker/runconfig"
-	tagpkg "github.com/docker/docker/tag"
+	"github.com/docker/docker/reference"
 	"github.com/docker/docker/utils"
-)
-
-const (
-	tarHeaderSize = 512
+	"github.com/docker/go-units"
 )
 
 // CmdBuild builds a new image from the source code at a given path.
@@ -140,7 +131,7 @@ func (cli *DockerCli) CmdBuild(args ...string) error {
 
 	var excludes []string
 	if err == nil {
-		excludes, err = utils.ReadDockerIgnore(f)
+		excludes, err = dockerignore.ReadAll(f)
 		if err != nil {
 			return err
 		}
@@ -154,7 +145,7 @@ func (cli *DockerCli) CmdBuild(args ...string) error {
 	// then make sure we send both files over to the daemon
 	// because Dockerfile is, obviously, needed no matter what, and
 	// .dockerignore is needed to know if either one needs to be
-	// removed.  The deamon will remove them for us, if needed, after it
+	// removed. The daemon will remove them for us, if needed, after it
 	// parses the Dockerfile. Ignore errors here, as they will have been
 	// caught by ValidateContextDirectory above.
 	var includes = []string{"."}
@@ -178,16 +169,9 @@ func (cli *DockerCli) CmdBuild(args ...string) error {
 	context = replaceDockerfileTarWrapper(context, newDockerfile, relDockerfile)
 
 	// Setup an upload progress bar
-	// FIXME: ProgressReader shouldn't be this annoying to use
-	sf := streamformatter.NewStreamFormatter()
-	var body io.Reader = progressreader.New(progressreader.Config{
-		In:        context,
-		Out:       cli.out,
-		Formatter: sf,
-		NewLines:  true,
-		ID:        "",
-		Action:    "Sending build context to Docker daemon",
-	})
+	progressOutput := streamformatter.NewStreamFormatter().NewProgressOutput(cli.out, true)
+
+	var body io.Reader = progress.NewProgressReader(context, progressOutput, 0, "", "Sending build context to Docker daemon")
 
 	var memory int64
 	if *flMemoryString != "" {
@@ -211,113 +195,55 @@ func (cli *DockerCli) CmdBuild(args ...string) error {
 		}
 	}
 
-	var shmSize int64 = 67108864 // initial SHM size is 64MB
-	if *flShmSize != "" {
-		parsedShmSize, err := units.RAMInBytes(*flShmSize)
-		if err != nil {
-			return err
-		}
-		if parsedShmSize <= 0 {
-			return fmt.Errorf("--shm-size: SHM size must be greater than 0 . You specified: %v ", parsedShmSize)
-		}
-		shmSize = parsedShmSize
-	}
-
-	// Send the build context
-	v := url.Values{
-		"t": flTags.GetAll(),
-	}
-	if *suppressOutput {
-		v.Set("q", "1")
-	}
+	var remoteContext string
 	if isRemote {
-		v.Set("remote", cmd.Arg(0))
-	}
-	if *noCache {
-		v.Set("nocache", "1")
-	}
-	if *rm {
-		v.Set("rm", "1")
-	} else {
-		v.Set("rm", "0")
+		remoteContext = cmd.Arg(0)
 	}
 
-	if *forceRm {
-		v.Set("forcerm", "1")
+	options := types.ImageBuildOptions{
+		Context:        body,
+		Memory:         memory,
+		MemorySwap:     memorySwap,
+		Tags:           flTags.GetAll(),
+		SuppressOutput: *suppressOutput,
+		RemoteContext:  remoteContext,
+		NoCache:        *noCache,
+		Remove:         *rm,
+		ForceRemove:    *forceRm,
+		PullParent:     *pull,
+		Isolation:      *isolation,
+		CPUSetCPUs:     *flCPUSetCpus,
+		CPUSetMems:     *flCPUSetMems,
+		CPUShares:      *flCPUShares,
+		CPUQuota:       *flCPUQuota,
+		CPUPeriod:      *flCPUPeriod,
+		CgroupParent:   *flCgroupParent,
+		ShmSize:        *flShmSize,
+		Dockerfile:     relDockerfile,
+		Ulimits:        flUlimits.GetList(),
+		BuildArgs:      flBuildArg.GetAll(),
+		AuthConfigs:    cli.configFile.AuthConfigs,
 	}
 
-	if *pull {
-		v.Set("pull", "1")
-	}
-
-	if !runconfig.IsolationLevel.IsDefault(runconfig.IsolationLevel(*isolation)) {
-		v.Set("isolation", *isolation)
-	}
-
-	v.Set("cpusetcpus", *flCPUSetCpus)
-	v.Set("cpusetmems", *flCPUSetMems)
-	v.Set("cpushares", strconv.FormatInt(*flCPUShares, 10))
-	v.Set("cpuquota", strconv.FormatInt(*flCPUQuota, 10))
-	v.Set("cpuperiod", strconv.FormatInt(*flCPUPeriod, 10))
-	v.Set("memory", strconv.FormatInt(memory, 10))
-	v.Set("memswap", strconv.FormatInt(memorySwap, 10))
-	v.Set("shmsize", strconv.FormatInt(shmSize, 10))
-	v.Set("cgroupparent", *flCgroupParent)
-
-	v.Set("dockerfile", relDockerfile)
-
-	ulimitsVar := flUlimits.GetList()
-	ulimitsJSON, err := json.Marshal(ulimitsVar)
+	response, err := cli.client.ImageBuild(options)
 	if err != nil {
 		return err
 	}
-	v.Set("ulimits", string(ulimitsJSON))
 
-	// collect all the build-time environment variables for the container
-	buildArgs := runconfig.ConvertKVStringsToMap(flBuildArg.GetAll())
-	buildArgsJSON, err := json.Marshal(buildArgs)
+	err = jsonmessage.DisplayJSONMessagesStream(response.Body, cli.out, cli.outFd, cli.isTerminalOut)
 	if err != nil {
-		return err
+		if jerr, ok := err.(*jsonmessage.JSONError); ok {
+			// If no error code is set, default to 1
+			if jerr.Code == 0 {
+				jerr.Code = 1
+			}
+			return Cli.StatusError{Status: jerr.Message, StatusCode: jerr.Code}
+		}
 	}
-	v.Set("buildargs", string(buildArgsJSON))
-
-	headers := http.Header(make(map[string][]string))
-	buf, err := json.Marshal(cli.configFile.AuthConfigs)
-	if err != nil {
-		return err
-	}
-	headers.Add("X-Registry-Config", base64.URLEncoding.EncodeToString(buf))
-	headers.Set("Content-Type", "application/tar")
-
-	sopts := &streamOpts{
-		rawTerminal: true,
-		in:          body,
-		out:         cli.out,
-		headers:     headers,
-	}
-
-	serverResp, err := cli.stream("POST", fmt.Sprintf("/build?%s", v.Encode()), sopts)
 
 	// Windows: show error message about modified file permissions.
-	if runtime.GOOS == "windows" {
-		h, err := httputils.ParseServerHeader(serverResp.header.Get("Server"))
-		if err == nil {
-			if h.OS != "windows" {
-				fmt.Fprintln(cli.err, `SECURITY WARNING: You are building a Docker image from Windows against a non-Windows Docker host. All files and directories added to build context will have '-rwxr-xr-x' permissions. It is recommended to double check and reset permissions for sensitive files and directories.`)
-			}
-		}
-	}
-
-	if jerr, ok := err.(*jsonmessage.JSONError); ok {
-		// If no error code is set, default to 1
-		if jerr.Code == 0 {
-			jerr.Code = 1
-		}
-		return Cli.StatusError{Status: jerr.Message, StatusCode: jerr.Code}
-	}
-
-	if err != nil {
-		return err
+	if response.OSType == "windows" {
+		fmt.Fprintln(cli.err, `SECURITY WARNING: You are building a Docker image from Windows against a non-Windows Docker host. All files and directories added to build context will have '-rwxr-xr-x' permissions. It is recommended to double check and reset permissions for sensitive files and directories.`)
 	}
 
 	// Since the build was successful, now we must tag any of the resolved
@@ -333,12 +259,8 @@ func (cli *DockerCli) CmdBuild(args ...string) error {
 
 // validateTag checks if the given image name can be resolved.
 func validateTag(rawRepo string) (string, error) {
-	ref, err := reference.ParseNamed(rawRepo)
+	_, err := reference.ParseNamed(rawRepo)
 	if err != nil {
-		return "", err
-	}
-
-	if err := registry.ValidateRepositoryName(ref); err != nil {
 		return "", err
 	}
 
@@ -459,7 +381,7 @@ func writeToFile(r io.Reader, filename string) error {
 func getContextFromReader(r io.Reader, dockerfileName string) (absContextDir, relDockerfile string, err error) {
 	buf := bufio.NewReader(r)
 
-	magic, err := buf.Peek(tarHeaderSize)
+	magic, err := buf.Peek(archive.HeaderSize)
 	if err != nil && err != io.EOF {
 		return "", "", fmt.Errorf("failed to peek context header from STDIN: %v", err)
 	}
@@ -495,7 +417,7 @@ func getContextFromReader(r io.Reader, dockerfileName string) (absContextDir, re
 // path of the dockerfile in that context directory, and a non-nil error on
 // success.
 func getContextFromGitURL(gitURL, dockerfileName string) (absContextDir, relDockerfile string, err error) {
-	if absContextDir, err = utils.GitClone(gitURL); err != nil {
+	if absContextDir, err = gitutils.Clone(gitURL); err != nil {
 		return "", "", fmt.Errorf("unable to 'git clone' to temporary context directory: %v", err)
 	}
 
@@ -514,17 +436,10 @@ func getContextFromURL(out io.Writer, remoteURL, dockerfileName string) (absCont
 		return "", "", fmt.Errorf("unable to download remote context %s: %v", remoteURL, err)
 	}
 	defer response.Body.Close()
+	progressOutput := streamformatter.NewStreamFormatter().NewProgressOutput(out, true)
 
 	// Pass the response body through a progress reader.
-	progReader := &progressreader.Config{
-		In:        response.Body,
-		Out:       out,
-		Formatter: streamformatter.NewStreamFormatter(),
-		Size:      response.ContentLength,
-		NewLines:  true,
-		ID:        "",
-		Action:    fmt.Sprintf("Downloading build context from remote url: %s", remoteURL),
-	}
+	progReader := progress.NewProgressReader(response.Body, progressOutput, response.ContentLength, "", fmt.Sprintf("Downloading build context from remote url: %s", remoteURL))
 
 	return getContextFromReader(progReader, dockerfileName)
 }
@@ -561,7 +476,6 @@ func (td *trustedDockerfile) Close() error {
 // resolvedTag records the repository, tag, and resolved digest reference
 // from a Dockerfile rewrite.
 type resolvedTag struct {
-	repoInfo  *registry.RepositoryInfo
 	digestRef reference.Canonical
 	tagRef    reference.NamedTagged
 }
@@ -608,35 +522,17 @@ func rewriteDockerfileFrom(dockerfileName string, translator func(reference.Name
 			if err != nil {
 				return nil, nil, err
 			}
-
-			digested := false
-			switch ref.(type) {
-			case reference.Tagged:
-			case reference.Digested:
-				digested = true
-			default:
-				ref, err = reference.WithTag(ref, tagpkg.DefaultTag)
-				if err != nil {
-					return nil, nil, err
-				}
-			}
-
-			repoInfo, err := registry.ParseRepositoryInfo(ref)
-			if err != nil {
-				return nil, nil, fmt.Errorf("unable to parse repository info %q: %v", ref.String(), err)
-			}
-
-			if !digested && isTrusted() {
-				trustedRef, err := translator(ref.(reference.NamedTagged))
+			ref = reference.WithDefaultTag(ref)
+			if ref, ok := ref.(reference.NamedTagged); ok && isTrusted() {
+				trustedRef, err := translator(ref)
 				if err != nil {
 					return nil, nil, err
 				}
 
 				line = dockerfileFromLinePattern.ReplaceAllLiteralString(line, fmt.Sprintf("FROM %s", trustedRef.String()))
 				resolvedTags = append(resolvedTags, &resolvedTag{
-					repoInfo:  repoInfo,
 					digestRef: trustedRef,
-					tagRef:    ref.(reference.NamedTagged),
+					tagRef:    ref,
 				})
 			}
 		}

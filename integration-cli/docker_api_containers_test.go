@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -67,6 +68,7 @@ func (s *DockerSuite) TestContainerApiGetJSONNoFieldsOmitted(c *check.C) {
 		"Ports",
 		"Labels",
 		"Status",
+		"NetworkSettings",
 	}
 
 	// decoding into types.Container do not work since it eventually unmarshal
@@ -211,7 +213,7 @@ func (s *DockerSuite) TestContainerApiStartDupVolumeBinds(c *check.C) {
 	status, body, err := sockRequest("POST", "/containers/"+name+"/start", config)
 	c.Assert(err, checker.IsNil)
 	c.Assert(status, checker.Equals, http.StatusInternalServerError)
-	c.Assert(string(body), checker.Contains, "Duplicate bind", check.Commentf("Expected failure due to duplicate bind mounts to same path, instead got: %q with error: %v", string(body), err))
+	c.Assert(string(body), checker.Contains, "Duplicate mount point", check.Commentf("Expected failure due to duplicate bind mounts to same path, instead got: %q with error: %v", string(body), err))
 }
 
 func (s *DockerSuite) TestContainerApiStartVolumesFrom(c *check.C) {
@@ -1050,7 +1052,7 @@ func (s *DockerSuite) TestContainerApiDeleteNotExist(c *check.C) {
 	status, body, err := sockRequest("DELETE", "/containers/doesnotexist", nil)
 	c.Assert(err, checker.IsNil)
 	c.Assert(status, checker.Equals, http.StatusNotFound)
-	c.Assert(string(body), checker.Matches, "no such id: doesnotexist\n")
+	c.Assert(string(body), checker.Matches, "No such container: doesnotexist\n")
 }
 
 func (s *DockerSuite) TestContainerApiDeleteForce(c *check.C) {
@@ -1387,4 +1389,171 @@ func (s *DockerSuite) TestStartWithNilDNS(c *check.C) {
 	dns, err := inspectFieldJSON(containerID, "HostConfig.Dns")
 	c.Assert(err, checker.IsNil)
 	c.Assert(dns, checker.Equals, "[]")
+}
+
+func (s *DockerSuite) TestPostContainersCreateShmSizeNegative(c *check.C) {
+	config := map[string]interface{}{
+		"Image":      "busybox",
+		"HostConfig": map[string]interface{}{"ShmSize": -1},
+	}
+
+	status, body, err := sockRequest("POST", "/containers/create", config)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusInternalServerError)
+	c.Assert(string(body), checker.Contains, "SHM size must be greater then 0")
+}
+
+func (s *DockerSuite) TestPostContainersCreateShmSizeZero(c *check.C) {
+	config := map[string]interface{}{
+		"Image":      "busybox",
+		"HostConfig": map[string]interface{}{"ShmSize": 0},
+	}
+
+	status, body, err := sockRequest("POST", "/containers/create", config)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusInternalServerError)
+	c.Assert(string(body), checker.Contains, "SHM size must be greater then 0")
+}
+
+func (s *DockerSuite) TestPostContainersCreateShmSizeHostConfigOmitted(c *check.C) {
+	var defaultSHMSize int64 = 67108864
+	config := map[string]interface{}{
+		"Image": "busybox",
+		"Cmd":   "mount",
+	}
+
+	status, body, err := sockRequest("POST", "/containers/create", config)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusCreated)
+
+	var container types.ContainerCreateResponse
+	c.Assert(json.Unmarshal(body, &container), check.IsNil)
+
+	status, body, err = sockRequest("GET", "/containers/"+container.ID+"/json", nil)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusOK)
+
+	var containerJSON types.ContainerJSON
+	c.Assert(json.Unmarshal(body, &containerJSON), check.IsNil)
+
+	c.Assert(*containerJSON.HostConfig.ShmSize, check.Equals, defaultSHMSize)
+
+	out, _ := dockerCmd(c, "start", "-i", containerJSON.ID)
+	shmRegexp := regexp.MustCompile(`shm on /dev/shm type tmpfs(.*)size=65536k`)
+	if !shmRegexp.MatchString(out) {
+		c.Fatalf("Expected shm of 64MB in mount command, got %v", out)
+	}
+}
+
+func (s *DockerSuite) TestPostContainersCreateShmSizeOmitted(c *check.C) {
+	config := map[string]interface{}{
+		"Image":      "busybox",
+		"HostConfig": map[string]interface{}{},
+		"Cmd":        "mount",
+	}
+
+	status, body, err := sockRequest("POST", "/containers/create", config)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusCreated)
+
+	var container types.ContainerCreateResponse
+	c.Assert(json.Unmarshal(body, &container), check.IsNil)
+
+	status, body, err = sockRequest("GET", "/containers/"+container.ID+"/json", nil)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusOK)
+
+	var containerJSON types.ContainerJSON
+	c.Assert(json.Unmarshal(body, &containerJSON), check.IsNil)
+
+	c.Assert(*containerJSON.HostConfig.ShmSize, check.Equals, int64(67108864))
+
+	out, _ := dockerCmd(c, "start", "-i", containerJSON.ID)
+	shmRegexp := regexp.MustCompile(`shm on /dev/shm type tmpfs(.*)size=65536k`)
+	if !shmRegexp.MatchString(out) {
+		c.Fatalf("Expected shm of 64MB in mount command, got %v", out)
+	}
+}
+
+func (s *DockerSuite) TestPostContainersCreateWithShmSize(c *check.C) {
+	config := map[string]interface{}{
+		"Image":      "busybox",
+		"Cmd":        "mount",
+		"HostConfig": map[string]interface{}{"ShmSize": 1073741824},
+	}
+
+	status, body, err := sockRequest("POST", "/containers/create", config)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusCreated)
+
+	var container types.ContainerCreateResponse
+	c.Assert(json.Unmarshal(body, &container), check.IsNil)
+
+	status, body, err = sockRequest("GET", "/containers/"+container.ID+"/json", nil)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusOK)
+
+	var containerJSON types.ContainerJSON
+	c.Assert(json.Unmarshal(body, &containerJSON), check.IsNil)
+
+	c.Assert(*containerJSON.HostConfig.ShmSize, check.Equals, int64(1073741824))
+
+	out, _ := dockerCmd(c, "start", "-i", containerJSON.ID)
+	shmRegex := regexp.MustCompile(`shm on /dev/shm type tmpfs(.*)size=1048576k`)
+	if !shmRegex.MatchString(out) {
+		c.Fatalf("Expected shm of 1GB in mount command, got %v", out)
+	}
+}
+
+func (s *DockerSuite) TestPostContainersCreateMemorySwappinessHostConfigOmitted(c *check.C) {
+	config := map[string]interface{}{
+		"Image": "busybox",
+	}
+
+	status, body, err := sockRequest("POST", "/containers/create", config)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusCreated)
+
+	var container types.ContainerCreateResponse
+	c.Assert(json.Unmarshal(body, &container), check.IsNil)
+
+	status, body, err = sockRequest("GET", "/containers/"+container.ID+"/json", nil)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusOK)
+
+	var containerJSON types.ContainerJSON
+	c.Assert(json.Unmarshal(body, &containerJSON), check.IsNil)
+
+	c.Assert(*containerJSON.HostConfig.MemorySwappiness, check.Equals, int64(-1))
+}
+
+// check validation is done daemon side and not only in cli
+func (s *DockerSuite) TestPostContainersCreateWithOomScoreAdjInvalidRange(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+
+	config := struct {
+		Image       string
+		OomScoreAdj int
+	}{"busybox", 1001}
+	name := "oomscoreadj-over"
+	status, b, err := sockRequest("POST", "/containers/create?name="+name, config)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusInternalServerError)
+	expected := "Invalid value 1001, range for oom score adj is [-1000, 1000]."
+	if !strings.Contains(string(b), expected) {
+		c.Fatalf("Expected output to contain %q, got %q", expected, string(b))
+	}
+
+	config = struct {
+		Image       string
+		OomScoreAdj int
+	}{"busybox", -1001}
+	name = "oomscoreadj-low"
+	status, b, err = sockRequest("POST", "/containers/create?name="+name, config)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusInternalServerError)
+	expected = "Invalid value -1001, range for oom score adj is [-1000, 1000]."
+	if !strings.Contains(string(b), expected) {
+		c.Fatalf("Expected output to contain %q, got %q", expected, string(b))
+	}
 }

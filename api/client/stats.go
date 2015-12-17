@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -14,7 +13,7 @@ import (
 	"github.com/docker/docker/api/types"
 	Cli "github.com/docker/docker/cli"
 	"github.com/docker/docker/pkg/jsonmessage"
-	"github.com/docker/docker/pkg/units"
+	"github.com/docker/go-units"
 )
 
 type containerStats struct {
@@ -37,26 +36,19 @@ type stats struct {
 }
 
 func (s *containerStats) Collect(cli *DockerCli, streamStats bool) {
-	v := url.Values{}
-	if streamStats {
-		v.Set("stream", "1")
-	} else {
-		v.Set("stream", "0")
-	}
-	serverResp, err := cli.call("GET", "/containers/"+s.Name+"/stats?"+v.Encode(), nil, nil)
+	responseBody, err := cli.client.ContainerStats(s.Name, streamStats)
 	if err != nil {
 		s.mu.Lock()
 		s.err = err
 		s.mu.Unlock()
 		return
 	}
-
-	defer serverResp.body.Close()
+	defer responseBody.Close()
 
 	var (
 		previousCPU    uint64
 		previousSystem uint64
-		dec            = json.NewDecoder(serverResp.body)
+		dec            = json.NewDecoder(responseBody)
 		u              = make(chan error, 1)
 	)
 	go func() {
@@ -70,7 +62,7 @@ func (s *containerStats) Collect(cli *DockerCli, streamStats bool) {
 			var memPercent = 0.0
 			var cpuPercent = 0.0
 
-			// MemoryStats.Limit will never be 0 unless the container is not running and we havn't
+			// MemoryStats.Limit will never be 0 unless the container is not running and we haven't
 			// got any data from cgroup
 			if v.MemoryStats.Limit != 0 {
 				memPercent = float64(v.MemoryStats.Usage) / float64(v.MemoryStats.Limit) * 100.0
@@ -156,16 +148,11 @@ func (cli *DockerCli) CmdStats(args ...string) error {
 	showAll := len(names) == 0
 
 	if showAll {
-		v := url.Values{}
-		if *all {
-			v.Set("all", "1")
+		options := types.ContainerListOptions{
+			All: *all,
 		}
-		body, _, err := readBody(cli.call("GET", "/containers/json?"+v.Encode(), nil, nil))
+		cs, err := cli.client.ContainerList(options)
 		if err != nil {
-			return err
-		}
-		var cs []types.Container
-		if err := json.Unmarshal(body, &cs); err != nil {
 			return err
 		}
 		for _, c := range cs {
@@ -202,14 +189,15 @@ func (cli *DockerCli) CmdStats(args ...string) error {
 			err   error
 		}
 		getNewContainers := func(c chan<- watch) {
-			res, err := cli.call("GET", "/events", nil, nil)
+			options := types.EventsOptions{}
+			resBody, err := cli.client.Events(options)
 			if err != nil {
 				c <- watch{err: err}
 				return
 			}
-			defer res.body.Close()
+			defer resBody.Close()
 
-			dec := json.NewDecoder(res.body)
+			dec := json.NewDecoder(resBody)
 			for {
 				var j *jsonmessage.JSONMessage
 				if err := dec.Decode(&j); err != nil {
@@ -299,7 +287,7 @@ func (cli *DockerCli) CmdStats(args ...string) error {
 			if ok {
 				if err != nil {
 					// this is suppressing "unexpected EOF" in the cli when the
-					// daemon restarts so it shudowns cleanly
+					// daemon restarts so it shutdowns cleanly
 					if err == io.ErrUnexpectedEOF {
 						return nil
 					}

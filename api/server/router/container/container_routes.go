@@ -13,11 +13,11 @@ import (
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/docker/docker/api/server/httputils"
 	"github.com/docker/docker/api/types"
+	timetypes "github.com/docker/docker/api/types/time"
 	"github.com/docker/docker/daemon"
 	derr "github.com/docker/docker/errors"
 	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/pkg/signal"
-	"github.com/docker/docker/pkg/timeutils"
 	"github.com/docker/docker/runconfig"
 	"github.com/docker/docker/utils"
 	"golang.org/x/net/context"
@@ -101,7 +101,7 @@ func (s *containerRouter) getContainersLogs(ctx context.Context, w http.Response
 
 	var since time.Time
 	if r.Form.Get("since") != "" {
-		s, n, err := timeutils.ParseTimestamps(r.Form.Get("since"), 0)
+		s, n, err := timetypes.ParseTimestamps(r.Form.Get("since"), 0)
 		if err != nil {
 			return err
 		}
@@ -358,7 +358,7 @@ func (s *containerRouter) deleteContainers(ctx context.Context, w http.ResponseW
 	}
 
 	name := vars["name"]
-	config := &daemon.ContainerRmConfig{
+	config := &types.ContainerRmConfig{
 		ForceRemove:  httputils.BoolValue(r, "force"),
 		RemoveVolume: httputils.BoolValue(r, "v"),
 		RemoveLink:   httputils.BoolValue(r, "link"),
@@ -367,7 +367,7 @@ func (s *containerRouter) deleteContainers(ctx context.Context, w http.ResponseW
 	if err := s.backend.ContainerRm(name, config); err != nil {
 		// Force a 404 for the empty string
 		if strings.Contains(strings.ToLower(err.Error()), "prefix can't be empty") {
-			return fmt.Errorf("no such id: \"\"")
+			return fmt.Errorf("no such container: \"\"")
 		}
 		return err
 	}

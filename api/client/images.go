@@ -1,21 +1,19 @@
 package client
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/filters"
 	Cli "github.com/docker/docker/cli"
 	"github.com/docker/docker/opts"
 	flag "github.com/docker/docker/pkg/mflag"
-	"github.com/docker/docker/pkg/parsers/filters"
 	"github.com/docker/docker/pkg/stringid"
-	"github.com/docker/docker/pkg/units"
+	"github.com/docker/docker/reference"
+	"github.com/docker/go-units"
 )
 
 // CmdImages lists the images in a specified repository, or all top-level images if no repository is specified.
@@ -36,7 +34,7 @@ func (cli *DockerCli) CmdImages(args ...string) error {
 
 	// Consolidate all filter flags, and sanity check them early.
 	// They'll get process in the daemon/server.
-	imageFilterArgs := filters.Args{}
+	imageFilterArgs := filters.NewArgs()
 	for _, f := range flFilter.GetAll() {
 		var err error
 		imageFilterArgs, err = filters.ParseFlag(f, imageFilterArgs)
@@ -45,33 +43,19 @@ func (cli *DockerCli) CmdImages(args ...string) error {
 		}
 	}
 
-	matchName := cmd.Arg(0)
-	v := url.Values{}
-	if len(imageFilterArgs) > 0 {
-		filterJSON, err := filters.ToParam(imageFilterArgs)
-		if err != nil {
-			return err
-		}
-		v.Set("filters", filterJSON)
-	}
-
+	var matchName string
 	if cmd.NArg() == 1 {
-		// FIXME rename this parameter, to not be confused with the filters flag
-		v.Set("filter", matchName)
-	}
-	if *all {
-		v.Set("all", "1")
+		matchName = cmd.Arg(0)
 	}
 
-	serverResp, err := cli.call("GET", "/images/json?"+v.Encode(), nil, nil)
+	options := types.ImageListOptions{
+		MatchName: matchName,
+		All:       *all,
+		Filters:   imageFilterArgs,
+	}
+
+	images, err := cli.client.ImageList(options)
 	if err != nil {
-		return err
-	}
-
-	defer serverResp.body.Close()
-
-	images := []types.Image{}
-	if err := json.NewDecoder(serverResp.body).Decode(&images); err != nil {
 		return err
 	}
 
@@ -114,9 +98,9 @@ func (cli *DockerCli) CmdImages(args ...string) error {
 				repo = ref.Name()
 
 				switch x := ref.(type) {
-				case reference.Digested:
+				case reference.Canonical:
 					digest = x.Digest().String()
-				case reference.Tagged:
+				case reference.NamedTagged:
 					tag = x.Tag()
 				}
 			}

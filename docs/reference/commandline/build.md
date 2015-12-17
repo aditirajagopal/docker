@@ -25,6 +25,7 @@ parent = "smn_cli"
       -f, --file=""                   Name of the Dockerfile (Default is 'PATH/Dockerfile')
       --force-rm=false                Always remove intermediate containers
       --help=false                    Print usage
+      --isolation=""                  Container isolation technology
       -m, --memory=""                 Memory limit for all build containers
       --memory-swap=""                Total memory (memory + swap), `-1` to disable swap
       --no-cache=false                Do not use cache when building the image
@@ -97,12 +98,9 @@ adding a `.dockerignore` file to that directory as well. For information on
 creating one, see the [.dockerignore file](../builder.md#dockerignore-file).
 
 If the Docker client loses connection to the daemon, the build is canceled.
-This happens if you interrupt the Docker client with `ctrl-c` or if the Docker
-client is killed for any reason.
-
-> **Note:**
-> Currently only the "run" phase of the build can be canceled until pull
-> cancellation is implemented).
+This happens if you interrupt the Docker client with `CTRL-c` or if the Docker
+client is killed for any reason. If the build initiated a pull which is still
+running at the time the build is cancelled, the pull is cancelled as well.
 
 ## Return code
 
@@ -301,3 +299,19 @@ like `ENV` values do.
 
 For detailed information on using `ARG` and `ENV` instructions, see the
 [Dockerfile reference](../builder.md).
+
+### Specify isolation technology for container (--isolation)
+
+This option is useful in situations where you are running Docker containers on
+Windows. The `--isolation=<value>` option sets a container's isolation
+technology. On Linux, the only supported is the `default` option which uses
+Linux namespaces. On Microsoft Windows, you can specify these values:
+
+
+| Value     | Description                                                                                                                                                   |
+|-----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `default` | Use the value specified by the Docker daemon's `--exec-opt` . If the `daemon` does not specify an isolation technology, Microsoft Windows uses `process` as its default value.  |
+| `process` | Namespace isolation only.                                                                                                                                     |
+| `hyperv`   | Hyper-V hypervisor partition-based isolation.                                                                                                                  |
+
+Specifying the `--isolation` flag without a value is the same as setting `--isolation="default"`.

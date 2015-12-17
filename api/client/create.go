@@ -1,20 +1,17 @@
 package client
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
-	"strings"
 
-	"github.com/docker/distribution/reference"
+	"github.com/docker/docker/api/client/lib"
 	"github.com/docker/docker/api/types"
 	Cli "github.com/docker/docker/cli"
+	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/docker/reference"
 	"github.com/docker/docker/registry"
 	"github.com/docker/docker/runconfig"
-	tagpkg "github.com/docker/docker/tag"
 )
 
 func (cli *DockerCli) pullImage(image string) error {
@@ -22,26 +19,18 @@ func (cli *DockerCli) pullImage(image string) error {
 }
 
 func (cli *DockerCli) pullImageCustomOut(image string, out io.Writer) error {
-	v := url.Values{}
-
 	ref, err := reference.ParseNamed(image)
 	if err != nil {
 		return err
 	}
 
 	var tag string
-	switch x := ref.(type) {
-	case reference.Digested:
+	switch x := reference.WithDefaultTag(ref).(type) {
+	case reference.Canonical:
 		tag = x.Digest().String()
-	case reference.Tagged:
+	case reference.NamedTagged:
 		tag = x.Tag()
-	default:
-		// pull only the image tagged 'latest' if no tag was specified
-		tag = tagpkg.DefaultTag
 	}
-
-	v.Set("fromImage", ref.Name())
-	v.Set("tag", tag)
 
 	// Resolve the Repository name from fqn to RepositoryInfo
 	repoInfo, err := registry.ParseRepositoryInfo(ref)
@@ -50,24 +39,24 @@ func (cli *DockerCli) pullImageCustomOut(image string, out io.Writer) error {
 	}
 
 	// Resolve the Auth config relevant for this server
-	authConfig := registry.ResolveAuthConfig(cli.configFile, repoInfo.Index)
-	buf, err := json.Marshal(authConfig)
+	encodedAuth, err := cli.encodeRegistryAuth(repoInfo.Index)
 	if err != nil {
 		return err
 	}
 
-	registryAuthHeader := []string{
-		base64.URLEncoding.EncodeToString(buf),
+	options := types.ImageCreateOptions{
+		Parent:       ref.Name(),
+		Tag:          tag,
+		RegistryAuth: encodedAuth,
 	}
-	sopts := &streamOpts{
-		rawTerminal: true,
-		out:         out,
-		headers:     map[string][]string{"X-Registry-Auth": registryAuthHeader},
-	}
-	if _, err := cli.stream("POST", "/images/create?"+v.Encode(), sopts); err != nil {
+
+	responseBody, err := cli.client.ImageCreate(options)
+	if err != nil {
 		return err
 	}
-	return nil
+	defer responseBody.Close()
+
+	return jsonmessage.DisplayJSONMessagesStream(responseBody, out, cli.outFd, cli.isTerminalOut)
 }
 
 type cidFile struct {
@@ -90,11 +79,6 @@ func newCIDFile(path string) (*cidFile, error) {
 }
 
 func (cli *DockerCli) createContainer(config *runconfig.Config, hostConfig *runconfig.HostConfig, cidfile, name string) (*types.ContainerCreateResponse, error) {
-	containerValues := url.Values{}
-	if name != "" {
-		containerValues.Set("name", name)
-	}
-
 	mergedConfig := runconfig.MergeConfigs(config, hostConfig)
 
 	var containerIDFile *cidFile
@@ -110,24 +94,13 @@ func (cli *DockerCli) createContainer(config *runconfig.Config, hostConfig *runc
 	if err != nil {
 		return nil, err
 	}
-
-	isDigested := false
-	switch ref.(type) {
-	case reference.Tagged:
-	case reference.Digested:
-		isDigested = true
-	default:
-		ref, err = reference.WithTag(ref, tagpkg.DefaultTag)
-		if err != nil {
-			return nil, err
-		}
-	}
+	ref = reference.WithDefaultTag(ref)
 
 	var trustedRef reference.Canonical
 
-	if isTrusted() && !isDigested {
+	if ref, ok := ref.(reference.NamedTagged); ok && isTrusted() {
 		var err error
-		trustedRef, err = cli.trustedReference(ref.(reference.NamedTagged))
+		trustedRef, err = cli.trustedReference(ref)
 		if err != nil {
 			return nil, err
 		}
@@ -135,34 +108,32 @@ func (cli *DockerCli) createContainer(config *runconfig.Config, hostConfig *runc
 	}
 
 	//create the container
-	serverResp, err := cli.call("POST", "/containers/create?"+containerValues.Encode(), mergedConfig, nil)
+	response, err := cli.client.ContainerCreate(mergedConfig, name)
 	//if image not found try to pull it
-	if serverResp.statusCode == 404 && strings.Contains(err.Error(), config.Image) {
-		fmt.Fprintf(cli.err, "Unable to find image '%s' locally\n", ref.String())
+	if err != nil {
+		if lib.IsErrImageNotFound(err) {
+			fmt.Fprintf(cli.err, "Unable to find image '%s' locally\n", ref.String())
 
-		// we don't want to write to stdout anything apart from container.ID
-		if err = cli.pullImageCustomOut(config.Image, cli.err); err != nil {
-			return nil, err
-		}
-		if trustedRef != nil && !isDigested {
-			if err := cli.tagTrusted(trustedRef, ref.(reference.NamedTagged)); err != nil {
+			// we don't want to write to stdout anything apart from container.ID
+			if err = cli.pullImageCustomOut(config.Image, cli.err); err != nil {
 				return nil, err
 			}
-		}
-		// Retry
-		if serverResp, err = cli.call("POST", "/containers/create?"+containerValues.Encode(), mergedConfig, nil); err != nil {
+			if ref, ok := ref.(reference.NamedTagged); ok && trustedRef != nil {
+				if err := cli.tagTrusted(trustedRef, ref); err != nil {
+					return nil, err
+				}
+			}
+			// Retry
+			var retryErr error
+			response, retryErr = cli.client.ContainerCreate(mergedConfig, name)
+			if retryErr != nil {
+				return nil, retryErr
+			}
+		} else {
 			return nil, err
 		}
-	} else if err != nil {
-		return nil, err
 	}
 
-	defer serverResp.body.Close()
-
-	var response types.ContainerCreateResponse
-	if err := json.NewDecoder(serverResp.body).Decode(&response); err != nil {
-		return nil, err
-	}
 	for _, warning := range response.Warnings {
 		fmt.Fprintf(cli.err, "WARNING: %s\n", warning)
 	}

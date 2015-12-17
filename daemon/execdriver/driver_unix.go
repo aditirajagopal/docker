@@ -26,8 +26,8 @@ type Mount struct {
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
 	Writable    bool   `json:"writable"`
-	Private     bool   `json:"private"`
-	Slave       bool   `json:"slave"`
+	Data        string `json:"data"`
+	Propagation string `json:"mountpropagation"`
 }
 
 // Resources contains all resource configs for a driver.
@@ -37,16 +37,18 @@ type Resources struct {
 
 	// Fields below here are platform specific
 
-	BlkioWeightDevice []*blkiodev.WeightDevice `json:"blkio_weight_device"`
-	MemorySwap        int64                    `json:"memory_swap"`
-	KernelMemory      int64                    `json:"kernel_memory"`
-	CPUQuota          int64                    `json:"cpu_quota"`
-	CpusetCpus        string                   `json:"cpuset_cpus"`
-	CpusetMems        string                   `json:"cpuset_mems"`
-	CPUPeriod         int64                    `json:"cpu_period"`
-	Rlimits           []*ulimit.Rlimit         `json:"rlimits"`
-	OomKillDisable    bool                     `json:"oom_kill_disable"`
-	MemorySwappiness  int64                    `json:"memory_swappiness"`
+	BlkioWeightDevice           []*blkiodev.WeightDevice   `json:"blkio_weight_device"`
+	BlkioThrottleReadBpsDevice  []*blkiodev.ThrottleDevice `json:"blkio_throttle_read_bps_device"`
+	BlkioThrottleWriteBpsDevice []*blkiodev.ThrottleDevice `json:"blkio_throttle_write_bps_device"`
+	MemorySwap                  int64                      `json:"memory_swap"`
+	KernelMemory                int64                      `json:"kernel_memory"`
+	CPUQuota                    int64                      `json:"cpu_quota"`
+	CpusetCpus                  string                     `json:"cpuset_cpus"`
+	CpusetMems                  string                     `json:"cpuset_mems"`
+	CPUPeriod                   int64                      `json:"cpu_period"`
+	Rlimits                     []*ulimit.Rlimit           `json:"rlimits"`
+	OomKillDisable              bool                       `json:"oom_kill_disable"`
+	MemorySwappiness            int64                      `json:"memory_swappiness"`
 }
 
 // ProcessConfig is the platform specific structure that describes a process
@@ -113,11 +115,18 @@ type Command struct {
 	GIDMapping         []idtools.IDMap   `json:"gidmapping"`
 	GroupAdd           []string          `json:"group_add"`
 	Ipc                *Ipc              `json:"ipc"`
+	OomScoreAdj        int               `json:"oom_score_adj"`
 	Pid                *Pid              `json:"pid"`
 	ReadonlyRootfs     bool              `json:"readonly_rootfs"`
 	RemappedRoot       *User             `json:"remap_root"`
+	SeccompProfile     string            `json:"seccomp_profile"`
 	UIDMapping         []idtools.IDMap   `json:"uidmapping"`
 	UTS                *UTS              `json:"uts"`
+}
+
+// SetRootPropagation sets the root mount propagation mode.
+func SetRootPropagation(config *configs.Config, propagation int) {
+	config.RootPropagation = propagation
 }
 
 // InitContainer is the initialization of a container config.
@@ -132,7 +141,9 @@ func InitContainer(c *Command) *configs.Config {
 	container.Devices = c.AutoCreatedDevices
 	container.Rootfs = c.Rootfs
 	container.Readonlyfs = c.ReadonlyRootfs
-	container.RootPropagation = mount.RPRIVATE
+	// This can be overridden later by driver during mount setup based
+	// on volume options
+	SetRootPropagation(container, mount.RPRIVATE)
 
 	// check to see if we are running in ramdisk to disable pivot root
 	container.NoPivotRoot = os.Getenv("DOCKER_RAMDISK") != ""
@@ -168,6 +179,8 @@ func SetupCgroups(container *configs.Config, c *Command) error {
 		container.Cgroups.CpuQuota = c.Resources.CPUQuota
 		container.Cgroups.BlkioWeight = c.Resources.BlkioWeight
 		container.Cgroups.BlkioWeightDevice = c.Resources.BlkioWeightDevice
+		container.Cgroups.BlkioThrottleReadBpsDevice = c.Resources.BlkioThrottleReadBpsDevice
+		container.Cgroups.BlkioThrottleWriteBpsDevice = c.Resources.BlkioThrottleWriteBpsDevice
 		container.Cgroups.OomKillDisable = c.Resources.OomKillDisable
 		container.Cgroups.MemorySwappiness = c.Resources.MemorySwappiness
 	}

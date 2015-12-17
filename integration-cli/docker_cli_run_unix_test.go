@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -168,10 +169,19 @@ func (s *DockerSuite) TestRunWithKernelMemory(c *check.C) {
 	out, err := inspectField("test1", "HostConfig.KernelMemory")
 	c.Assert(err, check.IsNil)
 	c.Assert(out, check.Equals, "52428800")
+}
+
+func (s *DockerSuite) TestRunWithInvalidKernelMemory(c *check.C) {
+	testRequires(c, kernelMemorySupport)
+
+	out, _, err := dockerCmdWithError("run", "--kernel-memory", "2M", "busybox", "true")
+	c.Assert(err, check.NotNil)
+	expected := "Minimum kernel memory limit allowed is 4MB"
+	c.Assert(out, checker.Contains, expected)
 
 	out, _, err = dockerCmdWithError("run", "--kernel-memory", "-16m", "--name", "test2", "busybox", "echo", "test")
-	expected := "invalid size"
 	c.Assert(err, check.NotNil)
+	expected = "invalid size"
 	c.Assert(out, checker.Contains, expected)
 }
 
@@ -242,6 +252,18 @@ func (s *DockerSuite) TestRunWithBlkioInvalidWeight(c *check.C) {
 func (s *DockerSuite) TestRunWithBlkioInvalidWeightDevice(c *check.C) {
 	testRequires(c, blkioWeight)
 	out, _, err := dockerCmdWithError("run", "--blkio-weight-device", "/dev/sda:5", "busybox", "true")
+	c.Assert(err, check.NotNil, check.Commentf(out))
+}
+
+func (s *DockerSuite) TestRunWithBlkioInvalidDeviceReadBps(c *check.C) {
+	testRequires(c, blkioWeight)
+	out, _, err := dockerCmdWithError("run", "--device-read-bps", "/dev/sdX:500", "busybox", "true")
+	c.Assert(err, check.NotNil, check.Commentf(out))
+}
+
+func (s *DockerSuite) TestRunWithBlkioInvalidDeviceWriteBps(c *check.C) {
+	testRequires(c, blkioWeight)
+	out, _, err := dockerCmdWithError("run", "--device-write-bps", "/dev/sdX:500", "busybox", "true")
 	c.Assert(err, check.NotNil, check.Commentf(out))
 }
 
@@ -408,4 +430,106 @@ func (s *DockerSuite) TestRunInvalidCPUShares(c *check.C) {
 	c.Assert(err, check.NotNil, check.Commentf(out))
 	expected = "The maximum allowed cpu-shares is"
 	c.Assert(out, checker.Contains, expected)
+}
+
+func (s *DockerSuite) TestRunWithDefaultShmSize(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+
+	name := "shm-default"
+	out, _ := dockerCmd(c, "run", "--name", name, "busybox", "mount")
+	shmRegex := regexp.MustCompile(`shm on /dev/shm type tmpfs(.*)size=65536k`)
+	if !shmRegex.MatchString(out) {
+		c.Fatalf("Expected shm of 64MB in mount command, got %v", out)
+	}
+	shmSize, err := inspectField(name, "HostConfig.ShmSize")
+	c.Assert(err, check.IsNil)
+	c.Assert(shmSize, check.Equals, "67108864")
+}
+
+func (s *DockerSuite) TestRunWithShmSize(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+
+	name := "shm"
+	out, _ := dockerCmd(c, "run", "--name", name, "--shm-size=1G", "busybox", "mount")
+	shmRegex := regexp.MustCompile(`shm on /dev/shm type tmpfs(.*)size=1048576k`)
+	if !shmRegex.MatchString(out) {
+		c.Fatalf("Expected shm of 1GB in mount command, got %v", out)
+	}
+	shmSize, err := inspectField(name, "HostConfig.ShmSize")
+	c.Assert(err, check.IsNil)
+	c.Assert(shmSize, check.Equals, "1073741824")
+}
+
+func (s *DockerSuite) TestRunTmpfsMounts(c *check.C) {
+	// TODO Windows (Post TP4): This test cannot run on a Windows daemon as
+	// Windows does not support tmpfs mounts.
+	testRequires(c, DaemonIsLinux)
+	if out, _, err := dockerCmdWithError("run", "--tmpfs", "/run", "busybox", "touch", "/run/somefile"); err != nil {
+		c.Fatalf("/run directory not mounted on tmpfs %q %s", err, out)
+	}
+	if out, _, err := dockerCmdWithError("run", "--tmpfs", "/run:noexec,nosuid,rw,size=5k,mode=700", "busybox", "touch", "/run/somefile"); err != nil {
+		c.Fatalf("/run failed to mount on tmpfs with valid options %q %s", err, out)
+	}
+	if _, _, err := dockerCmdWithError("run", "--tmpfs", "/run:foobar", "busybox", "touch", "/run/somefile"); err == nil {
+		c.Fatalf("/run mounted on tmpfs when it should have vailed within invalid mount option")
+	}
+	if _, _, err := dockerCmdWithError("run", "--tmpfs", "/run", "-v", "/run:/run", "busybox", "touch", "/run/somefile"); err == nil {
+		c.Fatalf("Should have generated an error saying Duplicate mount  points")
+	}
+}
+
+// TestRunSeccompProfileDenyUnshare checks that 'docker run --security-opt seccomp:/tmp/profile.json jess/unshare unshare' exits with operation not permitted.
+func (s *DockerSuite) TestRunSeccompProfileDenyUnshare(c *check.C) {
+	testRequires(c, SameHostDaemon, seccompEnabled)
+	jsonData := `{
+	"defaultAction": "SCMP_ACT_ALLOW",
+	"syscalls": [
+		{
+			"name": "unshare",
+			"action": "SCMP_ACT_ERRNO"
+		}
+	]
+}`
+	tmpFile, err := ioutil.TempFile("", "profile.json")
+	defer tmpFile.Close()
+	if err != nil {
+		c.Fatal(err)
+	}
+
+	if _, err := tmpFile.Write([]byte(jsonData)); err != nil {
+		c.Fatal(err)
+	}
+	runCmd := exec.Command(dockerBinary, "run", "--security-opt", "seccomp:"+tmpFile.Name(), "jess/unshare", "unshare", "-p", "-m", "-f", "-r", "mount", "-t", "proc", "none", "/proc")
+	out, _, _ := runCommandWithOutput(runCmd)
+	if !strings.Contains(out, "Operation not permitted") {
+		c.Fatalf("expected unshare with seccomp profile denied to fail, got %s", out)
+	}
+}
+
+// TestRunSeccompProfileDenyChmod checks that 'docker run --security-opt seccomp:/tmp/profile.json busybox chmod 400 /etc/hostname' exits with operation not permitted.
+func (s *DockerSuite) TestRunSeccompProfileDenyChmod(c *check.C) {
+	testRequires(c, SameHostDaemon, seccompEnabled)
+	jsonData := `{
+	"defaultAction": "SCMP_ACT_ALLOW",
+	"syscalls": [
+		{
+			"name": "chmod",
+			"action": "SCMP_ACT_ERRNO"
+		}
+	]
+}`
+	tmpFile, err := ioutil.TempFile("", "profile.json")
+	defer tmpFile.Close()
+	if err != nil {
+		c.Fatal(err)
+	}
+
+	if _, err := tmpFile.Write([]byte(jsonData)); err != nil {
+		c.Fatal(err)
+	}
+	runCmd := exec.Command(dockerBinary, "run", "--security-opt", "seccomp:"+tmpFile.Name(), "busybox", "chmod", "400", "/etc/hostname")
+	out, _, _ := runCommandWithOutput(runCmd)
+	if !strings.Contains(out, "Operation not permitted") {
+		c.Fatalf("expected chmod with seccomp profile denied to fail, got %s", out)
+	}
 }

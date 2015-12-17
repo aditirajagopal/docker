@@ -12,7 +12,7 @@ set -e
 #   will be used as Docker binary version and package version.
 # - The hash of the git commit will also be included in the Docker binary,
 #   with the suffix -dirty if the repository isn't clean.
-# - The script is intented to be run inside the docker container specified
+# - The script is intended to be run inside the docker container specified
 #   in the Dockerfile at the root of the source. In other words:
 #   DO NOT CALL THIS SCRIPT DIRECTLY.
 # - The right way to call this script is to invoke "make" from
@@ -70,7 +70,11 @@ if command -v git &> /dev/null && git rev-parse &> /dev/null; then
 	if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 		GITCOMMIT="$GITCOMMIT-dirty"
 	fi
-	BUILDTIME=$(date -u)
+	! BUILDTIME=$(date --rfc-3339 ns | sed -e 's/ /T/') &> /dev/null
+	if [ -z $BUILDTIME ]; then
+		# If using bash 3.1 which doesn't support --rfc-3389, eg Windows CI
+		BUILDTIME=$(date -u)
+	fi
 elif [ "$DOCKER_GITCOMMIT" ]; then
 	GITCOMMIT="$DOCKER_GITCOMMIT"
 else

@@ -2,44 +2,46 @@ package runconfig
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
 	"github.com/docker/docker/opts"
 	flag "github.com/docker/docker/pkg/mflag"
+	"github.com/docker/docker/pkg/mount"
 	"github.com/docker/docker/pkg/nat"
 	"github.com/docker/docker/pkg/parsers"
 	"github.com/docker/docker/pkg/signal"
 	"github.com/docker/docker/pkg/stringutils"
-	"github.com/docker/docker/pkg/units"
 	"github.com/docker/docker/volume"
+	"github.com/docker/go-units"
 )
 
 var (
 	// ErrConflictContainerNetworkAndLinks conflict between --net=container and links
-	ErrConflictContainerNetworkAndLinks = fmt.Errorf("Conflicting options: --net=container can't be used with links. This would result in undefined behavior")
+	ErrConflictContainerNetworkAndLinks = fmt.Errorf("Conflicting options: container type network can't be used with links. This would result in undefined behavior")
 	// ErrConflictUserDefinedNetworkAndLinks conflict between --net=<NETWORK> and links
-	ErrConflictUserDefinedNetworkAndLinks = fmt.Errorf("Conflicting options: --net=<NETWORK> can't be used with links. This would result in undefined behavior")
+	ErrConflictUserDefinedNetworkAndLinks = fmt.Errorf("Conflicting options: networking can't be used with links. This would result in undefined behavior")
 	// ErrConflictSharedNetwork conflict between private and other networks
 	ErrConflictSharedNetwork = fmt.Errorf("Container sharing network namespace with another container or host cannot be connected to any other network")
 	// ErrConflictHostNetwork conflict from being disconnected from host network or connected to host network.
 	ErrConflictHostNetwork = fmt.Errorf("Container cannot be disconnected from host network or connected to host network")
 	// ErrConflictNoNetwork conflict between private and other networks
-	ErrConflictNoNetwork = fmt.Errorf("Container cannot be connected to multiple networks with one of the networks in --none mode")
+	ErrConflictNoNetwork = fmt.Errorf("Container cannot be connected to multiple networks with one of the networks in private (none) mode")
 	// ErrConflictNetworkAndDNS conflict between --dns and the network mode
-	ErrConflictNetworkAndDNS = fmt.Errorf("Conflicting options: --dns and the network mode (--net)")
+	ErrConflictNetworkAndDNS = fmt.Errorf("Conflicting options: dns and the network mode")
 	// ErrConflictNetworkHostname conflict between the hostname and the network mode
-	ErrConflictNetworkHostname = fmt.Errorf("Conflicting options: -h and the network mode (--net)")
+	ErrConflictNetworkHostname = fmt.Errorf("Conflicting options: hostname and the network mode")
 	// ErrConflictHostNetworkAndLinks conflict between --net=host and links
-	ErrConflictHostNetworkAndLinks = fmt.Errorf("Conflicting options: --net=host can't be used with links. This would result in undefined behavior")
+	ErrConflictHostNetworkAndLinks = fmt.Errorf("Conflicting options: host type networking can't be used with links. This would result in undefined behavior")
 	// ErrConflictContainerNetworkAndMac conflict between the mac address and the network mode
-	ErrConflictContainerNetworkAndMac = fmt.Errorf("Conflicting options: --mac-address and the network mode (--net)")
+	ErrConflictContainerNetworkAndMac = fmt.Errorf("Conflicting options: mac-address and the network mode")
 	// ErrConflictNetworkHosts conflict between add-host and the network mode
-	ErrConflictNetworkHosts = fmt.Errorf("Conflicting options: --add-host and the network mode (--net)")
-	// ErrConflictNetworkPublishPorts conflict between the pulbish options and the network mode
-	ErrConflictNetworkPublishPorts = fmt.Errorf("Conflicting options: -p, -P, --publish-all, --publish and the network mode (--net)")
+	ErrConflictNetworkHosts = fmt.Errorf("Conflicting options: custom host-to-IP mapping and the network mode")
+	// ErrConflictNetworkPublishPorts conflict between the publish options and the network mode
+	ErrConflictNetworkPublishPorts = fmt.Errorf("Conflicting options: port publishing and the container type network mode")
 	// ErrConflictNetworkExposePorts conflict between the expose option and the network mode
-	ErrConflictNetworkExposePorts = fmt.Errorf("Conflicting options: --expose and the network mode (--net)")
+	ErrConflictNetworkExposePorts = fmt.Errorf("Conflicting options: port exposing and the container type network mode")
 )
 
 // Parse parses the specified args for the specified command and generates a Config,
@@ -50,11 +52,14 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 		// FIXME: use utils.ListOpts for attach and volumes?
 		flAttach            = opts.NewListOpts(opts.ValidateAttach)
 		flVolumes           = opts.NewListOpts(nil)
+		flTmpfs             = opts.NewListOpts(nil)
 		flBlkioWeightDevice = opts.NewWeightdeviceOpt(opts.ValidateWeightDevice)
-		flLinks             = opts.NewListOpts(opts.ValidateLink)
+		flDeviceReadBps     = opts.NewThrottledeviceOpt(opts.ValidateThrottleBpsDevice)
+		flDeviceWriteBps    = opts.NewThrottledeviceOpt(opts.ValidateThrottleBpsDevice)
+		flLinks             = opts.NewListOpts(ValidateLink)
 		flEnv               = opts.NewListOpts(opts.ValidateEnv)
 		flLabels            = opts.NewListOpts(opts.ValidateEnv)
-		flDevices           = opts.NewListOpts(opts.ValidateDevice)
+		flDevices           = opts.NewListOpts(ValidateDevice)
 
 		flUlimits = opts.NewUlimitOpt(nil)
 
@@ -79,6 +84,7 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 		flStdin             = cmd.Bool([]string{"i", "-interactive"}, false, "Keep STDIN open even if not attached")
 		flTty               = cmd.Bool([]string{"t", "-tty"}, false, "Allocate a pseudo-TTY")
 		flOomKillDisable    = cmd.Bool([]string{"-oom-kill-disable"}, false, "Disable OOM Killer")
+		flOomScoreAdj       = cmd.Int([]string{"-oom-score-adj"}, 0, "Tune host's OOM preferences (-1000 to 1000)")
 		flContainerIDFile   = cmd.String([]string{"-cidfile"}, "", "Write the container ID to the file")
 		flEntrypoint        = cmd.String([]string{"-entrypoint"}, "", "Overwrite the default ENTRYPOINT of the image")
 		flHostname          = cmd.String([]string{"h", "-hostname"}, "", "Container host name")
@@ -94,7 +100,7 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 		flCpusetCpus        = cmd.String([]string{"-cpuset-cpus"}, "", "CPUs in which to allow execution (0-3, 0,1)")
 		flCpusetMems        = cmd.String([]string{"-cpuset-mems"}, "", "MEMs in which to allow execution (0-3, 0,1)")
 		flBlkioWeight       = cmd.Uint16([]string{"-blkio-weight"}, 0, "Block IO (relative weight), between 10 and 1000")
-		flSwappiness        = cmd.Int64([]string{"-memory-swappiness"}, -1, "Tuning container memory swappiness (0 to 100)")
+		flSwappiness        = cmd.Int64([]string{"-memory-swappiness"}, -1, "Tune container memory swappiness (0 to 100)")
 		flNetMode           = cmd.String([]string{"-net"}, "default", "Set the Network for the container")
 		flMacAddress        = cmd.String([]string{"-mac-address"}, "", "Container MAC address (e.g. 92:d0:c6:0a:29:33)")
 		flIpcMode           = cmd.String([]string{"-ipc"}, "", "IPC namespace to use")
@@ -110,7 +116,10 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 
 	cmd.Var(&flAttach, []string{"a", "-attach"}, "Attach to STDIN, STDOUT or STDERR")
 	cmd.Var(&flBlkioWeightDevice, []string{"-blkio-weight-device"}, "Block IO weight (relative device weight)")
+	cmd.Var(&flDeviceReadBps, []string{"-device-read-bps"}, "Limit read rate (bytes per second) from a device")
+	cmd.Var(&flDeviceWriteBps, []string{"-device-write-bps"}, "Limit write rate (bytes per second) to a device")
 	cmd.Var(&flVolumes, []string{"v", "-volume"}, "Bind mount a volume")
+	cmd.Var(&flTmpfs, []string{"-tmpfs"}, "Mount a tmpfs directory")
 	cmd.Var(&flLinks, []string{"-link"}, "Add link to another container")
 	cmd.Var(&flDevices, []string{"-device"}, "Add a host device to the container")
 	cmd.Var(&flLabels, []string{"l", "-label"}, "Set meta data on a container")
@@ -201,16 +210,13 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 		return nil, nil, cmd, fmt.Errorf("Invalid value: %d. Valid memory swappiness range is 0-100", swappiness)
 	}
 
-	var parsedShm int64 = 67108864 // initial SHM size is 64MB
+	var parsedShm *int64
 	if *flShmSize != "" {
-		var err error
-		parsedShm, err = units.RAMInBytes(*flShmSize)
+		shmSize, err := units.RAMInBytes(*flShmSize)
 		if err != nil {
-			return nil, nil, cmd, fmt.Errorf("--shm-size: invalid SHM size")
+			return nil, nil, cmd, err
 		}
-		if parsedShm <= 0 {
-			return nil, nil, cmd, fmt.Errorf("--shm-size: SHM size must be greater than 0 . You specified: %v ", parsedShm)
-		}
+		parsedShm = &shmSize
 	}
 
 	var binds []string
@@ -221,6 +227,19 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 			// we do not want bind mounts being committed to image configs
 			binds = append(binds, bind)
 			flVolumes.Delete(bind)
+		}
+	}
+
+	// Can't evaluate options passed into --tmpfs until we actually mount
+	tmpfs := make(map[string]string)
+	for _, t := range flTmpfs.GetAll() {
+		if arr := strings.SplitN(t, ":", 2); len(arr) > 1 {
+			if _, _, err := mount.ParseTmpfsOptions(arr[1]); err != nil {
+				return nil, nil, cmd, err
+			}
+			tmpfs[arr[0]] = arr[1]
+		} else {
+			tmpfs[arr[0]] = ""
 		}
 	}
 
@@ -324,21 +343,23 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 	}
 
 	resources := Resources{
-		CgroupParent:      *flCgroupParent,
-		Memory:            flMemory,
-		MemoryReservation: MemoryReservation,
-		MemorySwap:        memorySwap,
-		MemorySwappiness:  flSwappiness,
-		KernelMemory:      KernelMemory,
-		CPUShares:         *flCPUShares,
-		CPUPeriod:         *flCPUPeriod,
-		CpusetCpus:        *flCpusetCpus,
-		CpusetMems:        *flCpusetMems,
-		CPUQuota:          *flCPUQuota,
-		BlkioWeight:       *flBlkioWeight,
-		BlkioWeightDevice: flBlkioWeightDevice.GetList(),
-		Ulimits:           flUlimits.GetList(),
-		Devices:           deviceMappings,
+		CgroupParent:        *flCgroupParent,
+		Memory:              flMemory,
+		MemoryReservation:   MemoryReservation,
+		MemorySwap:          memorySwap,
+		MemorySwappiness:    flSwappiness,
+		KernelMemory:        KernelMemory,
+		CPUShares:           *flCPUShares,
+		CPUPeriod:           *flCPUPeriod,
+		CpusetCpus:          *flCpusetCpus,
+		CpusetMems:          *flCpusetMems,
+		CPUQuota:            *flCPUQuota,
+		BlkioWeight:         *flBlkioWeight,
+		BlkioWeightDevice:   flBlkioWeightDevice.GetList(),
+		BlkioDeviceReadBps:  flDeviceReadBps.GetList(),
+		BlkioDeviceWriteBps: flDeviceWriteBps.GetList(),
+		Ulimits:             flUlimits.GetList(),
+		Devices:             deviceMappings,
 	}
 
 	config := &Config{
@@ -369,6 +390,7 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 	hostConfig := &HostConfig{
 		Binds:           binds,
 		ContainerIDFile: *flContainerIDFile,
+		OomScoreAdj:     *flOomScoreAdj,
 		OomKillDisable:  *flOomKillDisable,
 		Privileged:      *flPrivileged,
 		PortBindings:    portBindings,
@@ -399,6 +421,7 @@ func Parse(cmd *flag.FlagSet, args []string) (*Config, *HostConfig, *flag.FlagSe
 		Isolation:      IsolationLevel(*flIsolation),
 		ShmSize:        parsedShm,
 		Resources:      resources,
+		Tmpfs:          tmpfs,
 	}
 
 	// When allocating stdin in attached mode, close stdin at client disconnect
@@ -510,7 +533,7 @@ func ParseDevice(device string) (DeviceMapping, error) {
 		permissions = arr[2]
 		fallthrough
 	case 2:
-		if opts.ValidDeviceMode(arr[1]) {
+		if ValidDeviceMode(arr[1]) {
 			permissions = arr[1]
 		} else {
 			dst = arr[1]
@@ -532,4 +555,102 @@ func ParseDevice(device string) (DeviceMapping, error) {
 		CgroupPermissions: permissions,
 	}
 	return deviceMapping, nil
+}
+
+// ParseLink parses and validates the specified string as a link format (name:alias)
+func ParseLink(val string) (string, string, error) {
+	if val == "" {
+		return "", "", fmt.Errorf("empty string specified for links")
+	}
+	arr := strings.Split(val, ":")
+	if len(arr) > 2 {
+		return "", "", fmt.Errorf("bad format for links: %s", val)
+	}
+	if len(arr) == 1 {
+		return val, val, nil
+	}
+	// This is kept because we can actually get an HostConfig with links
+	// from an already created container and the format is not `foo:bar`
+	// but `/foo:/c1/bar`
+	if strings.HasPrefix(arr[0], "/") {
+		_, alias := path.Split(arr[1])
+		return arr[0][1:], alias, nil
+	}
+	return arr[0], arr[1], nil
+}
+
+// ValidateLink validates that the specified string has a valid link format (containerName:alias).
+func ValidateLink(val string) (string, error) {
+	if _, _, err := ParseLink(val); err != nil {
+		return val, err
+	}
+	return val, nil
+}
+
+// ValidDeviceMode checks if the mode for device is valid or not.
+// Valid mode is a composition of r (read), w (write), and m (mknod).
+func ValidDeviceMode(mode string) bool {
+	var legalDeviceMode = map[rune]bool{
+		'r': true,
+		'w': true,
+		'm': true,
+	}
+	if mode == "" {
+		return false
+	}
+	for _, c := range mode {
+		if !legalDeviceMode[c] {
+			return false
+		}
+		legalDeviceMode[c] = false
+	}
+	return true
+}
+
+// ValidateDevice validates a path for devices
+// It will make sure 'val' is in the form:
+//    [host-dir:]container-path[:mode]
+// It also validates the device mode.
+func ValidateDevice(val string) (string, error) {
+	return validatePath(val, ValidDeviceMode)
+}
+
+func validatePath(val string, validator func(string) bool) (string, error) {
+	var containerPath string
+	var mode string
+
+	if strings.Count(val, ":") > 2 {
+		return val, fmt.Errorf("bad format for path: %s", val)
+	}
+
+	split := strings.SplitN(val, ":", 3)
+	if split[0] == "" {
+		return val, fmt.Errorf("bad format for path: %s", val)
+	}
+	switch len(split) {
+	case 1:
+		containerPath = split[0]
+		val = path.Clean(containerPath)
+	case 2:
+		if isValid := validator(split[1]); isValid {
+			containerPath = split[0]
+			mode = split[1]
+			val = fmt.Sprintf("%s:%s", path.Clean(containerPath), mode)
+		} else {
+			containerPath = split[1]
+			val = fmt.Sprintf("%s:%s", split[0], path.Clean(containerPath))
+		}
+	case 3:
+		containerPath = split[1]
+		mode = split[2]
+		if isValid := validator(split[2]); !isValid {
+			return val, fmt.Errorf("bad mode specified: %s", mode)
+		}
+		val = fmt.Sprintf("%s:%s:%s", split[0], containerPath, mode)
+	}
+
+	if !path.IsAbs(containerPath) {
+		return val, fmt.Errorf("%s is not an absolute path", containerPath)
+	}
+	return val, nil
 }

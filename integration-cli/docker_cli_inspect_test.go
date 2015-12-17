@@ -209,8 +209,13 @@ func (s *DockerSuite) TestInspectContainerGraphDriver(c *check.C) {
 		return
 	}
 
+	imageDeviceID, err := inspectField("busybox", "GraphDriver.Data.DeviceId")
+	c.Assert(err, checker.IsNil)
+
 	deviceID, err := inspectField(out, "GraphDriver.Data.DeviceId")
 	c.Assert(err, checker.IsNil)
+
+	c.Assert(imageDeviceID, checker.Not(checker.Equals), deviceID)
 
 	_, err = strconv.Atoi(deviceID)
 	c.Assert(err, checker.IsNil, check.Commentf("failed to inspect DeviceId of the image: %s, %v", deviceID, err))
@@ -341,4 +346,29 @@ func (s *DockerSuite) TestInspectJSONFields(c *check.C) {
 
 	c.Assert(err, check.IsNil)
 	c.Assert(out, checker.Equals, "[]\n")
+}
+
+func (s *DockerSuite) TestInspectByPrefix(c *check.C) {
+	id, err := inspectField("busybox", "Id")
+	c.Assert(err, checker.IsNil)
+	c.Assert(id, checker.HasPrefix, "sha256:")
+
+	id2, err := inspectField(id[:12], "Id")
+	c.Assert(err, checker.IsNil)
+	c.Assert(id, checker.Equals, id2)
+
+	id3, err := inspectField(strings.TrimPrefix(id, "sha256:")[:12], "Id")
+	c.Assert(err, checker.IsNil)
+	c.Assert(id, checker.Equals, id3)
+}
+
+func (s *DockerSuite) TestInspectStopWhenNotFound(c *check.C) {
+	dockerCmd(c, "run", "--name=busybox", "-d", "busybox", "top")
+	dockerCmd(c, "run", "--name=not-shown", "-d", "busybox", "top")
+	out, _, err := dockerCmdWithError("inspect", "--type=container", "--format='{{.Name}}'", "busybox", "missing", "not-shown")
+
+	c.Assert(err, checker.Not(check.IsNil))
+	c.Assert(out, checker.Contains, "busybox")
+	c.Assert(out, checker.Not(checker.Contains), "not-shown")
+	c.Assert(out, checker.Contains, "Error: No such container: missing")
 }

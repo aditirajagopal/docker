@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/docker/docker/container"
 	"github.com/docker/docker/daemon/logger"
 	"github.com/docker/docker/pkg/stdcopy"
 )
@@ -19,7 +20,7 @@ type ContainerAttachWithLogsConfig struct {
 
 // ContainerAttachWithLogs attaches to logs according to the config passed in. See ContainerAttachWithLogsConfig.
 func (daemon *Daemon) ContainerAttachWithLogs(prefixOrName string, c *ContainerAttachWithLogsConfig) error {
-	container, err := daemon.Get(prefixOrName)
+	container, err := daemon.GetContainer(prefixOrName)
 	if err != nil {
 		return err
 	}
@@ -59,14 +60,14 @@ type ContainerWsAttachWithLogsConfig struct {
 
 // ContainerWsAttachWithLogs websocket connection
 func (daemon *Daemon) ContainerWsAttachWithLogs(prefixOrName string, c *ContainerWsAttachWithLogsConfig) error {
-	container, err := daemon.Get(prefixOrName)
+	container, err := daemon.GetContainer(prefixOrName)
 	if err != nil {
 		return err
 	}
 	return daemon.attachWithLogs(container, c.InStream, c.OutStream, c.ErrStream, c.Logs, c.Stream)
 }
 
-func (daemon *Daemon) attachWithLogs(container *Container, stdin io.ReadCloser, stdout, stderr io.Writer, logs, stream bool) error {
+func (daemon *Daemon) attachWithLogs(container *container.Container, stdin io.ReadCloser, stdout, stderr io.Writer, logs, stream bool) error {
 	if logs {
 		logDriver, err := daemon.getLogger(container)
 		if err != nil {

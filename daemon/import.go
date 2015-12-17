@@ -8,13 +8,13 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/image"
 	"github.com/docker/docker/layer"
 	"github.com/docker/docker/pkg/httputils"
-	"github.com/docker/docker/pkg/progressreader"
+	"github.com/docker/docker/pkg/progress"
 	"github.com/docker/docker/pkg/streamformatter"
+	"github.com/docker/docker/reference"
 	"github.com/docker/docker/runconfig"
 )
 
@@ -47,16 +47,8 @@ func (daemon *Daemon) ImportImage(src string, newRef reference.Named, msg string
 		if err != nil {
 			return err
 		}
-		progressReader := progressreader.New(progressreader.Config{
-			In:        resp.Body,
-			Out:       outStream,
-			Formatter: sf,
-			Size:      resp.ContentLength,
-			NewLines:  true,
-			ID:        "",
-			Action:    "Importing",
-		})
-		archive = progressReader
+		progressOutput := sf.NewProgressOutput(outStream, true)
+		archive = progress.NewProgressReader(resp.Body, progressOutput, resp.ContentLength, "", "Importing")
 	}
 
 	defer archive.Close()
@@ -98,9 +90,9 @@ func (daemon *Daemon) ImportImage(src string, newRef reference.Named, msg string
 		return err
 	}
 
-	// FIXME: connect with commit code and call tagstore directly
+	// FIXME: connect with commit code and call refstore directly
 	if newRef != nil {
-		if err := daemon.TagImage(newRef, id.String(), true); err != nil {
+		if err := daemon.TagImage(newRef, id.String()); err != nil {
 			return err
 		}
 	}

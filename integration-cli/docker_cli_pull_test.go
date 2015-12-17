@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -54,7 +53,8 @@ func (s *DockerHubPullSuite) TestPullNonExistingImage(c *check.C) {
 	} {
 		out, err := s.CmdWithError("pull", e.Alias)
 		c.Assert(err, checker.NotNil, check.Commentf("expected non-zero exit status when pulling non-existing image: %s", out))
-		c.Assert(out, checker.Contains, fmt.Sprintf("Error: image %s not found", e.Repo), check.Commentf("expected image not found error messages"))
+		// Hub returns 401 rather than 404 for nonexistent library/ repos.
+		c.Assert(out, checker.Contains, "unauthorized: access to the requested resource is not authorized", check.Commentf("expected unauthorized error message"))
 	}
 }
 
@@ -123,11 +123,24 @@ func (s *DockerHubPullSuite) TestPullAllTagsFromCentralRegistry(c *check.C) {
 	c.Assert(latestLine, checker.Not(checker.Equals), "", check.Commentf("no entry for busybox:latest found after pulling all tags"))
 	splitLatest := strings.Fields(latestLine)
 	splitCurrent := strings.Fields(splitOutImageCmd[1])
+
+	// Clear relative creation times, since these can easily change between
+	// two invocations of "docker images". Without this, the test can fail
+	// like this:
+	// ... obtained []string = []string{"busybox", "latest", "d9551b4026f0", "27", "minutes", "ago", "1.113", "MB"}
+	// ... expected []string = []string{"busybox", "latest", "d9551b4026f0", "26", "minutes", "ago", "1.113", "MB"}
+	splitLatest[3] = ""
+	splitLatest[4] = ""
+	splitLatest[5] = ""
+	splitCurrent[3] = ""
+	splitCurrent[4] = ""
+	splitCurrent[5] = ""
+
 	c.Assert(splitLatest, checker.DeepEquals, splitCurrent, check.Commentf("busybox:latest was changed after pulling all tags"))
 }
 
 // TestPullClientDisconnect kills the client during a pull operation and verifies that the operation
-// still succesfully completes on the daemon side.
+// gets cancelled.
 //
 // Ref: docker/docker#15589
 func (s *DockerHubPullSuite) TestPullClientDisconnect(c *check.C) {
@@ -148,14 +161,8 @@ func (s *DockerHubPullSuite) TestPullClientDisconnect(c *check.C) {
 	err = pullCmd.Process.Kill()
 	c.Assert(err, checker.IsNil)
 
-	maxAttempts := 20
-	for i := 0; ; i++ {
-		if _, err := s.CmdWithError("inspect", repoName); err == nil {
-			break
-		}
-		if i >= maxAttempts {
-			c.Fatal("timeout reached: image was not pulled after client disconnected")
-		}
-		time.Sleep(500 * time.Millisecond)
+	time.Sleep(2 * time.Second)
+	if _, err := s.CmdWithError("inspect", repoName); err == nil {
+		c.Fatal("image was pulled after client disconnected")
 	}
 }
