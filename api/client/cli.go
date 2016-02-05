@@ -4,17 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"runtime"
 
 	"github.com/docker/docker/api"
-	"github.com/docker/docker/api/client/lib"
 	"github.com/docker/docker/cli"
 	"github.com/docker/docker/cliconfig"
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/opts"
 	"github.com/docker/docker/pkg/term"
-	"github.com/docker/docker/pkg/tlsconfig"
+	"github.com/docker/engine-api/client"
+	"github.com/docker/go-connections/sockets"
+	"github.com/docker/go-connections/tlsconfig"
 )
 
 // DockerCli represents the docker command line client.
@@ -42,7 +44,9 @@ type DockerCli struct {
 	// isTerminalOut indicates whether the client's STDOUT is a TTY
 	isTerminalOut bool
 	// client is the http client that performs all API operations
-	client apiClient
+	client client.APIClient
+	// state holds the terminal state
+	state *term.State
 }
 
 // Initialize calls the init function that will setup the configuration for the client
@@ -67,9 +71,40 @@ func (cli *DockerCli) CheckTtyInput(attachStdin, ttyMode bool) error {
 }
 
 // PsFormat returns the format string specified in the configuration.
-// String contains columns and format specification, for example {{ID}\t{{Name}}.
+// String contains columns and format specification, for example {{ID}}\t{{Name}}.
 func (cli *DockerCli) PsFormat() string {
 	return cli.configFile.PsFormat
+}
+
+// ImagesFormat returns the format string specified in the configuration.
+// String contains columns and format specification, for example {{ID}}\t{{Name}}.
+func (cli *DockerCli) ImagesFormat() string {
+	return cli.configFile.ImagesFormat
+}
+
+func (cli *DockerCli) setRawTerminal() error {
+	if cli.isTerminalIn && os.Getenv("NORAW") == "" {
+		state, err := term.SetRawTerminal(cli.inFd)
+		if err != nil {
+			return err
+		}
+		cli.state = state
+	}
+	return nil
+}
+
+func (cli *DockerCli) restoreTerminal(in io.Closer) error {
+	if cli.state != nil {
+		term.RestoreTerminal(cli.inFd, cli.state)
+	}
+	// WARNING: DO NOT REMOVE THE OS CHECK !!!
+	// For some reason this Close call blocks on darwin..
+	// As the client exists right after, simply discard the close
+	// until we find a better solution.
+	if in != nil && runtime.GOOS != "darwin" {
+		return in.Close()
+	}
+	return nil
 }
 
 // NewDockerCli returns a DockerCli instance with IO output and error streams set by in, out and err.
@@ -103,12 +138,17 @@ func NewDockerCli(in io.ReadCloser, out, err io.Writer, clientFlags *cli.ClientF
 		}
 		customHeaders["User-Agent"] = "Docker-Client/" + dockerversion.Version + " (" + runtime.GOOS + ")"
 
-		verStr := string(api.DefaultVersion)
+		verStr := api.DefaultVersion.String()
 		if tmpStr := os.Getenv("DOCKER_API_VERSION"); tmpStr != "" {
 			verStr = tmpStr
 		}
 
-		client, err := lib.NewClient(host, verStr, clientFlags.Common.TLSOptions, customHeaders)
+		httpClient, err := newHTTPClient(host, clientFlags.Common.TLSOptions)
+		if err != nil {
+			return err
+		}
+
+		client, err := client.NewClient(host, verStr, httpClient, customHeaders)
 		if err != nil {
 			return err
 		}
@@ -137,11 +177,31 @@ func getServerHost(hosts []string, tlsOptions *tlsconfig.Options) (host string, 
 		return "", errors.New("Please specify only one -H")
 	}
 
-	defaultHost := opts.DefaultTCPHost
-	if tlsOptions != nil {
-		defaultHost = opts.DefaultTLSHost
+	host, err = opts.ParseHost(tlsOptions != nil, host)
+	return
+}
+
+func newHTTPClient(host string, tlsOptions *tlsconfig.Options) (*http.Client, error) {
+	if tlsOptions == nil {
+		// let the api client configure the default transport.
+		return nil, nil
 	}
 
-	host, err = opts.ParseHost(defaultHost, host)
-	return
+	config, err := tlsconfig.Client(*tlsOptions)
+	if err != nil {
+		return nil, err
+	}
+	tr := &http.Transport{
+		TLSClientConfig: config,
+	}
+	proto, addr, _, err := client.ParseHost(host)
+	if err != nil {
+		return nil, err
+	}
+
+	sockets.ConfigureTransport(tr, proto, addr)
+
+	return &http.Client{
+		Transport: tr,
+	}, nil
 }

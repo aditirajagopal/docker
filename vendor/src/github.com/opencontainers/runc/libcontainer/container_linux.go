@@ -21,6 +21,7 @@ import (
 	"github.com/opencontainers/runc/libcontainer/cgroups"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/criurpc"
+	"github.com/opencontainers/runc/libcontainer/utils"
 	"github.com/vishvananda/netlink/nl"
 )
 
@@ -968,7 +969,7 @@ func (c *linuxContainer) updateState(process parentProcess) error {
 	}
 	defer f.Close()
 	os.Remove(filepath.Join(c.root, "checkpoint"))
-	return json.NewEncoder(f).Encode(state)
+	return utils.WriteJSON(f, state)
 }
 
 func (c *linuxContainer) currentStatus() (Status, error) {
@@ -985,7 +986,7 @@ func (c *linuxContainer) currentStatus() (Status, error) {
 		}
 		return 0, newSystemError(err)
 	}
-	if c.config.Cgroups != nil && c.config.Cgroups.Freezer == configs.Frozen {
+	if c.config.Cgroups != nil && c.config.Cgroups.Resources != nil && c.config.Cgroups.Resources.Freezer == configs.Frozen {
 		return Paused, nil
 	}
 	return Running, nil

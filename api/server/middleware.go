@@ -1,9 +1,9 @@
 package server
 
 import (
-	"bytes"
+	"bufio"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"runtime"
 	"strings"
@@ -14,6 +14,7 @@ import (
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/errors"
 	"github.com/docker/docker/pkg/authorization"
+	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/pkg/version"
 	"golang.org/x/net/context"
 )
@@ -27,20 +28,37 @@ func debugRequestMiddleware(handler httputils.APIFunc) httputils.APIFunc {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 		logrus.Debugf("%s %s", r.Method, r.RequestURI)
 
-		if r.Method == "POST" {
-			if err := httputils.CheckForJSON(r); err == nil {
-				var buf bytes.Buffer
-				if _, err := buf.ReadFrom(r.Body); err == nil {
-					r.Body.Close()
-					r.Body = ioutil.NopCloser(&buf)
-					var postForm map[string]interface{}
-					if err := json.Unmarshal(buf.Bytes(), &postForm); err == nil {
-						if _, exists := postForm["password"]; exists {
-							postForm["password"] = "*****"
-						}
-						logrus.Debugf("form data: %q", postForm)
-					}
-				}
+		if r.Method != "POST" {
+			return handler(ctx, w, r, vars)
+		}
+		if err := httputils.CheckForJSON(r); err != nil {
+			return handler(ctx, w, r, vars)
+		}
+		maxBodySize := 4096 // 4KB
+		if r.ContentLength > int64(maxBodySize) {
+			return handler(ctx, w, r, vars)
+		}
+
+		body := r.Body
+		bufReader := bufio.NewReaderSize(body, maxBodySize)
+		r.Body = ioutils.NewReadCloserWrapper(bufReader, func() error { return body.Close() })
+
+		b, err := bufReader.Peek(maxBodySize)
+		if err != io.EOF {
+			// either there was an error reading, or the buffer is full (in which case the request is too large)
+			return handler(ctx, w, r, vars)
+		}
+
+		var postForm map[string]interface{}
+		if err := json.Unmarshal(b, &postForm); err == nil {
+			if _, exists := postForm["password"]; exists {
+				postForm["password"] = "*****"
+			}
+			formStr, errMarshal := json.Marshal(postForm)
+			if errMarshal == nil {
+				logrus.Debugf("form data: %s", string(formStr))
+			} else {
+				logrus.Debugf("form data: %q", postForm)
 			}
 		}
 
@@ -51,6 +69,7 @@ func debugRequestMiddleware(handler httputils.APIFunc) httputils.APIFunc {
 // authorizationMiddleware perform authorization on the request.
 func (s *Server) authorizationMiddleware(handler httputils.APIFunc) httputils.APIFunc {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+		// FIXME: fill when authN gets in
 		// User and UserAuthNMethod are taken from AuthN plugins
 		// Currently tracked in https://github.com/docker/docker/pull/13994
 		user := ""
@@ -92,7 +111,7 @@ func (s *Server) userAgentMiddleware(handler httputils.APIFunc) httputils.APIFun
 			}
 
 			if len(userAgent) == 2 && !dockerVersion.Equal(version.Version(userAgent[1])) {
-				logrus.Debugf("Warning: client and server don't have the same version (client: %s, server: %s)", userAgent[1], dockerVersion)
+				logrus.Warnf("Warning: client and server don't have the same version (client: %s, server: %s)", userAgent[1], dockerVersion)
 			}
 		}
 		return handler(ctx, w, r, vars)
@@ -128,7 +147,7 @@ func versionMiddleware(handler httputils.APIFunc) httputils.APIFunc {
 			return errors.ErrorCodeNewerClientVersion.WithArgs(apiVersion, api.DefaultVersion)
 		}
 		if apiVersion.LessThan(api.MinVersion) {
-			return errors.ErrorCodeOldClientVersion.WithArgs(apiVersion, api.DefaultVersion)
+			return errors.ErrorCodeOldClientVersion.WithArgs(apiVersion, api.MinVersion)
 		}
 
 		w.Header().Set("Server", "Docker/"+dockerversion.Version+" ("+runtime.GOOS+")")
@@ -163,8 +182,8 @@ func (s *Server) handleWithGlobalMiddlewares(handler httputils.APIFunc) httputil
 		middlewares = append(middlewares, debugRequestMiddleware)
 	}
 
-	if len(s.cfg.AuthZPluginNames) > 0 {
-		s.authZPlugins = authorization.NewPlugins(s.cfg.AuthZPluginNames)
+	if len(s.cfg.AuthorizationPluginNames) > 0 {
+		s.authZPlugins = authorization.NewPlugins(s.cfg.AuthorizationPluginNames)
 		middlewares = append(middlewares, s.authorizationMiddleware)
 	}
 

@@ -2,10 +2,12 @@ package client
 
 import (
 	"fmt"
+	"strings"
 
 	Cli "github.com/docker/docker/cli"
 	"github.com/docker/docker/pkg/ioutils"
 	flag "github.com/docker/docker/pkg/mflag"
+	"github.com/docker/docker/utils"
 	"github.com/docker/go-units"
 )
 
@@ -24,6 +26,9 @@ func (cli *DockerCli) CmdInfo(args ...string) error {
 	}
 
 	fmt.Fprintf(cli.out, "Containers: %d\n", info.Containers)
+	fmt.Fprintf(cli.out, " Running: %d\n", info.ContainersRunning)
+	fmt.Fprintf(cli.out, " Paused: %d\n", info.ContainersPaused)
+	fmt.Fprintf(cli.out, " Stopped: %d\n", info.ContainersStopped)
 	fmt.Fprintf(cli.out, "Images: %d\n", info.Images)
 	ioutils.FprintfIfNotEmpty(cli.out, "Server Version: %s\n", info.ServerVersion)
 	ioutils.FprintfIfNotEmpty(cli.out, "Storage Driver: %s\n", info.Driver)
@@ -38,20 +43,27 @@ func (cli *DockerCli) CmdInfo(args ...string) error {
 		}
 
 	}
+	if info.SystemStatus != nil {
+		for _, pair := range info.SystemStatus {
+			fmt.Fprintf(cli.out, "%s: %s\n", pair[0], pair[1])
+		}
+	}
 	ioutils.FprintfIfNotEmpty(cli.out, "Execution Driver: %s\n", info.ExecutionDriver)
 	ioutils.FprintfIfNotEmpty(cli.out, "Logging Driver: %s\n", info.LoggingDriver)
 
 	fmt.Fprintf(cli.out, "Plugins: \n")
 	fmt.Fprintf(cli.out, " Volume:")
-	for _, driver := range info.Plugins.Volume {
-		fmt.Fprintf(cli.out, " %s", driver)
-	}
+	fmt.Fprintf(cli.out, " %s", strings.Join(info.Plugins.Volume, " "))
 	fmt.Fprintf(cli.out, "\n")
 	fmt.Fprintf(cli.out, " Network:")
-	for _, driver := range info.Plugins.Network {
-		fmt.Fprintf(cli.out, " %s", driver)
-	}
+	fmt.Fprintf(cli.out, " %s", strings.Join(info.Plugins.Network, " "))
 	fmt.Fprintf(cli.out, "\n")
+
+	if len(info.Plugins.Authorization) != 0 {
+		fmt.Fprintf(cli.out, " Authorization:")
+		fmt.Fprintf(cli.out, " %s", strings.Join(info.Plugins.Authorization, " "))
+		fmt.Fprintf(cli.out, "\n")
+	}
 
 	ioutils.FprintfIfNotEmpty(cli.out, "Kernel Version: %s\n", info.KernelVersion)
 	ioutils.FprintfIfNotEmpty(cli.out, "Operating System: %s\n", info.OperatingSystem)
@@ -62,14 +74,14 @@ func (cli *DockerCli) CmdInfo(args ...string) error {
 	ioutils.FprintfIfNotEmpty(cli.out, "Name: %s\n", info.Name)
 	ioutils.FprintfIfNotEmpty(cli.out, "ID: %s\n", info.ID)
 
+	fmt.Fprintf(cli.out, "Debug mode (client): %v\n", utils.IsDebugEnabled())
+	fmt.Fprintf(cli.out, "Debug mode (server): %v\n", info.Debug)
+
 	if info.Debug {
-		fmt.Fprintf(cli.out, "Debug mode (server): %v\n", info.Debug)
 		fmt.Fprintf(cli.out, " File Descriptors: %d\n", info.NFd)
 		fmt.Fprintf(cli.out, " Goroutines: %d\n", info.NGoroutines)
 		fmt.Fprintf(cli.out, " System Time: %s\n", info.SystemTime)
 		fmt.Fprintf(cli.out, " EventsListeners: %d\n", info.NEventsListener)
-		fmt.Fprintf(cli.out, " Init SHA1: %s\n", info.InitSha1)
-		fmt.Fprintf(cli.out, " Init Path: %s\n", info.InitPath)
 		fmt.Fprintf(cli.out, " Docker Root Dir: %s\n", info.DockerRootDir)
 	}
 

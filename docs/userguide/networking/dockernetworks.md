@@ -284,7 +284,7 @@ The default `docker0` bridge network supports the use of port mapping and  `dock
 ## User-defined networks
 
 You can create your own user-defined networks that better isolate containers.
-Docker provides some default **network drivers** for use creating these
+Docker provides some default **network drivers** for creating these
 networks. You can create a new **bridge network** or **overlay network**. You
 can also create a **network plugin** or **remote network**  written to your own
 specifications.
@@ -305,19 +305,22 @@ features and some old features that aren't available.
 
 ```
 $ docker network create --driver bridge isolated_nw
-c5ee82f76de30319c75554a57164c682e7372d2c694fec41e42ac3b77e570f6b
+1196a4c5af43a21ae38ef34515b6af19236a3fc48122cf585e3f3054d509679b
 
 $ docker network inspect isolated_nw
 [
     {
         "Name": "isolated_nw",
-        "Id": "c5ee82f76de30319c75554a57164c682e7372d2c694fec41e42ac3b77e570f6b",
+        "Id": "1196a4c5af43a21ae38ef34515b6af19236a3fc48122cf585e3f3054d509679b",
         "Scope": "local",
         "Driver": "bridge",
         "IPAM": {
             "Driver": "default",
             "Config": [
-                {}
+                {
+                    "Subnet": "172.21.0.0/16",
+                    "Gateway": "172.21.0.1/16"
+                }
             ]
         },
         "Containers": {},
@@ -338,13 +341,13 @@ After you create the network, you can launch containers on it using  the `docker
 
 ```
 $ docker run --net=isolated_nw -itd --name=container3 busybox
-885b7b4f792bae534416c95caa35ba272f201fa181e18e59beba0c80d7d77c1d
+8c1a0a5be480921d669a073393ade66a3fc49933f08bcc5515b37b8144f6d47c
 
 $ docker network inspect isolated_nw
 [
     {
         "Name": "isolated_nw",
-        "Id": "c5ee82f76de30319c75554a57164c682e7372d2c694fec41e42ac3b77e570f6b",
+        "Id": "1196a4c5af43a21ae38ef34515b6af19236a3fc48122cf585e3f3054d509679b",
         "Scope": "local",
         "Driver": "bridge",
         "IPAM": {
@@ -354,8 +357,8 @@ $ docker network inspect isolated_nw
             ]
         },
         "Containers": {
-            "885b7b4f792bae534416c95caa35ba272f201fa181e18e59beba0c80d7d77c1d": {
-                "EndpointID": "514e1b419074397ea92bcfaa6698d17feb62db49d1320a27393b853ec65319c3",
+            "8c1a0a5be480921d669a073393ade66a3fc49933f08bcc5515b37b8144f6d47c": {
+                "EndpointID": "93b2db4a9b9a997beb912d28bcfc117f7b0eb924ff91d48cfa251d473e6a9b08",
                 "MacAddress": "02:42:ac:15:00:02",
                 "IPv4Address": "172.21.0.2/16",
                 "IPv6Address": ""
@@ -411,7 +414,7 @@ You should open the following ports between each of your hosts.
 | udp      | 4789 | Data plane (VXLAN)    |
 | tcp/udp  | 7946 | Control plane         |
 
-Your key-value store service may require additional ports. 
+Your key-value store service may require additional ports.
 Check your vendor's documentation and open any required ports.
 
 Once you have several machines provisioned, you can use Docker Swarm to quickly
@@ -435,6 +438,10 @@ Docker Engine for use with `overlay` network. There are two options to set:
     <tr>
         <td><pre>--cluster-advertise=HOST_IP|HOST_IFACE:PORT</pre></td>
         <td>The IP address or interface of the HOST used for clustering.</td>
+    </tr>
+    <tr>
+        <td><pre>--cluster-store-opt=KEY-VALUE OPTIONS</pre></td>
+        <td>Options such as TLS certificate or tuning discovery Timers</td>
     </tr>
     </tbody>
 </table>
@@ -482,23 +489,34 @@ networks can include features not present in Docker's default networks. For more
 information on writing plugins, see [Extending Docker](../../extend/index.md) and
 [Writing a network driver plugin](../../extend/plugins_network.md).
 
-## Legacy links
+### Docker embedded DNS server
+
+Docker daemon runs an embedded DNS server to provide automatic service discovery
+for containers connected to user defined networks. Name resolution requests from
+the containers are handled first by the embedded DNS server. If the embedded DNS
+server is unable to resolve the request it will be forwarded to any external DNS
+servers configured for the container. To facilitate this when the container is
+created, only the embedded DNS server reachable at `127.0.0.11` will be listed
+in the container's `resolv.conf` file. More information on embedded DNS server on
+user-defined networks can be found in the [embedded DNS server in user-defined networks]
+(configure-dns.md)
+
+## Links
 
 Before the Docker network feature, you could use the Docker link feature to
-allow containers to discover each other and securely transfer information about
-one container to another container. With the introduction of Docker networks,
-you can still create links but they are only supported on the default `bridge`
-network named `bridge` and appearing in your network stack as `docker0`.
-
-While links are still supported in this limited capacity, you should avoid them
-in preference of Docker networks. The link feature is expected to be deprecated
-and removed in a future release.
+allow containers to discover each other.  With the introduction of Docker networks,
+containers can be discovered by its name automatically. But you can still create
+links but they behave differently when used in the default `docker0` bridge network
+compared to user-defined networks. For more information, please refer to
+[Legacy Links](default_network/dockerlinks.md) for link feature in default `bridge` network
+and the [linking containers in user-defined networks](work-with-networks.md#linking-containers-in-user-defined-networks) for links
+functionality in user-defined networks.
 
 ## Related information
 
 - [Work with network commands](work-with-networks.md)
 - [Get started with multi-host networking](get-started-overlay.md)
-- [Managing Data in Containers](../dockervolumes.md)
+- [Managing Data in Containers](../containers/dockervolumes.md)
 - [Docker Machine overview](https://docs.docker.com/machine)
 - [Docker Swarm overview](https://docs.docker.com/swarm)
 - [Investigate the LibNetwork project](https://github.com/docker/libnetwork)

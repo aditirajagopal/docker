@@ -22,14 +22,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/opts"
 	"github.com/docker/docker/pkg/httputils"
 	"github.com/docker/docker/pkg/integration"
 	"github.com/docker/docker/pkg/ioutils"
-	"github.com/docker/docker/pkg/sockets"
 	"github.com/docker/docker/pkg/stringutils"
-	"github.com/docker/docker/pkg/tlsconfig"
+	"github.com/docker/engine-api/types"
+	"github.com/docker/go-connections/sockets"
+	"github.com/docker/go-connections/tlsconfig"
 	"github.com/go-check/check"
 )
 
@@ -194,7 +194,7 @@ func (d *Daemon) getClientConfig() (*clientConfig, error) {
 		transport = &http.Transport{}
 	}
 
-	sockets.ConfigureTCPTransport(transport, proto, addr)
+	sockets.ConfigureTransport(transport, proto, addr)
 
 	return &clientConfig{
 		transport: transport,
@@ -205,7 +205,15 @@ func (d *Daemon) getClientConfig() (*clientConfig, error) {
 
 // Start will start the daemon and return once it is ready to receive requests.
 // You can specify additional daemon flags.
-func (d *Daemon) Start(arg ...string) error {
+func (d *Daemon) Start(args ...string) error {
+	logFile, err := os.OpenFile(filepath.Join(d.folder, "docker.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
+	d.c.Assert(err, check.IsNil, check.Commentf("[%s] Could not create %s/docker.log", d.id, d.folder))
+
+	return d.StartWithLogFile(logFile, args...)
+}
+
+// StartWithLogFile will start the daemon and attach its streams to a given file.
+func (d *Daemon) StartWithLogFile(out *os.File, providedArgs ...string) error {
 	dockerBinary, err := exec.LookPath(dockerBinary)
 	d.c.Assert(err, check.IsNil, check.Commentf("[%s] could not find docker binary in $PATH", d.id))
 
@@ -224,28 +232,29 @@ func (d *Daemon) Start(arg ...string) error {
 
 	// If we don't explicitly set the log-level or debug flag(-D) then
 	// turn on debug mode
-	foundIt := false
-	for _, a := range arg {
+	foundLog := false
+	foundSd := false
+	for _, a := range providedArgs {
 		if strings.Contains(a, "--log-level") || strings.Contains(a, "-D") || strings.Contains(a, "--debug") {
-			foundIt = true
+			foundLog = true
+		}
+		if strings.Contains(a, "--storage-driver") {
+			foundSd = true
 		}
 	}
-	if !foundIt {
+	if !foundLog {
 		args = append(args, "--debug")
 	}
-
-	if d.storageDriver != "" {
+	if d.storageDriver != "" && !foundSd {
 		args = append(args, "--storage-driver", d.storageDriver)
 	}
 
-	args = append(args, arg...)
+	args = append(args, providedArgs...)
 	d.cmd = exec.Command(dockerBinary, args...)
 
-	d.logFile, err = os.OpenFile(filepath.Join(d.folder, "docker.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
-	d.c.Assert(err, check.IsNil, check.Commentf("[%s] Could not create %s/docker.log", d.id, d.folder))
-
-	d.cmd.Stdout = d.logFile
-	d.cmd.Stderr = d.logFile
+	d.cmd.Stdout = out
+	d.cmd.Stderr = out
+	d.logFile = out
 
 	if err := d.cmd.Start(); err != nil {
 		return fmt.Errorf("[%s] could not start daemon container: %v", d.id, err)
@@ -321,11 +330,11 @@ func (d *Daemon) StartWithBusybox(arg ...string) error {
 		}
 	}
 	// loading busybox image to this daemon
-	if _, err := d.Cmd("load", "--input", bb); err != nil {
-		return fmt.Errorf("could not load busybox image: %v", err)
+	if out, err := d.Cmd("load", "--input", bb); err != nil {
+		return fmt.Errorf("could not load busybox image: %s", out)
 	}
 	if err := os.Remove(bb); err != nil {
-		d.c.Logf("Could not remove %s: %v", bb, err)
+		d.c.Logf("could not remove %s: %v", bb, err)
 	}
 	return nil
 }
@@ -449,6 +458,11 @@ func (d *Daemon) sock() string {
 	return fmt.Sprintf("unix://%s/docker.sock", d.folder)
 }
 
+func (d *Daemon) waitRun(contID string) error {
+	args := []string{"--host", d.sock()}
+	return waitInspectWithArgs(contID, "{{.State.Running}}", "true", 10*time.Second, args...)
+}
+
 // Cmd will execute a docker CLI command against this Daemon.
 // Example: d.Cmd("version") will run docker -H unix://path/to/unix.sock version
 func (d *Daemon) Cmd(name string, arg ...string) (string, error) {
@@ -469,8 +483,8 @@ func (d *Daemon) CmdWithArgs(daemonArgs []string, name string, arg ...string) (s
 	return string(b), err
 }
 
-// LogfileName returns the path the the daemon's log file
-func (d *Daemon) LogfileName() string {
+// LogFileName returns the path the the daemon's log file
+func (d *Daemon) LogFileName() string {
 	return d.logFile.Name()
 }
 
@@ -1132,13 +1146,12 @@ COPY . /static`); err != nil {
 		ctx:       ctx}, nil
 }
 
-func inspectFieldAndMarshall(name, field string, output interface{}) error {
-	str, err := inspectFieldJSON(name, field)
-	if err != nil {
-		return err
+func inspectFieldAndMarshall(c *check.C, name, field string, output interface{}) {
+	str := inspectFieldJSON(c, name, field)
+	err := json.Unmarshal([]byte(str), output)
+	if c != nil {
+		c.Assert(err, check.IsNil, check.Commentf("failed to unmarshal: %v", err))
 	}
-
-	return json.Unmarshal([]byte(str), output)
 }
 
 func inspectFilter(name, filter string) (string, error) {
@@ -1146,21 +1159,37 @@ func inspectFilter(name, filter string) (string, error) {
 	inspectCmd := exec.Command(dockerBinary, "inspect", "-f", format, name)
 	out, exitCode, err := runCommandWithOutput(inspectCmd)
 	if err != nil || exitCode != 0 {
-		return "", fmt.Errorf("failed to inspect container %s: %s", name, out)
+		return "", fmt.Errorf("failed to inspect %s: %s", name, out)
 	}
 	return strings.TrimSpace(out), nil
 }
 
-func inspectField(name, field string) (string, error) {
+func inspectFieldWithError(name, field string) (string, error) {
 	return inspectFilter(name, fmt.Sprintf(".%s", field))
 }
 
-func inspectFieldJSON(name, field string) (string, error) {
-	return inspectFilter(name, fmt.Sprintf("json .%s", field))
+func inspectField(c *check.C, name, field string) string {
+	out, err := inspectFilter(name, fmt.Sprintf(".%s", field))
+	if c != nil {
+		c.Assert(err, check.IsNil)
+	}
+	return out
 }
 
-func inspectFieldMap(name, path, field string) (string, error) {
-	return inspectFilter(name, fmt.Sprintf("index .%s %q", path, field))
+func inspectFieldJSON(c *check.C, name, field string) string {
+	out, err := inspectFilter(name, fmt.Sprintf("json .%s", field))
+	if c != nil {
+		c.Assert(err, check.IsNil)
+	}
+	return out
+}
+
+func inspectFieldMap(c *check.C, name, path, field string) string {
+	out, err := inspectFilter(name, fmt.Sprintf("index .%s %q", path, field))
+	if c != nil {
+		c.Assert(err, check.IsNil)
+	}
+	return out
 }
 
 func inspectMountSourceField(name, destination string) (string, error) {
@@ -1172,7 +1201,7 @@ func inspectMountSourceField(name, destination string) (string, error) {
 }
 
 func inspectMountPoint(name, destination string) (types.MountPoint, error) {
-	out, err := inspectFieldJSON(name, "Mounts")
+	out, err := inspectFilter(name, "json .Mounts")
 	if err != nil {
 		return types.MountPoint{}, err
 	}
@@ -1204,7 +1233,7 @@ func inspectMountPointJSON(j, destination string) (types.MountPoint, error) {
 }
 
 func getIDByName(name string) (string, error) {
-	return inspectField(name, "Id")
+	return inspectFieldWithError(name, "Id")
 }
 
 // getContainerState returns the exit code of the container
@@ -1306,6 +1335,47 @@ func buildImageFromContextWithOut(name string, ctx *FakeContext, useCache bool, 
 		return "", "", err
 	}
 	return id, out, nil
+}
+
+func buildImageFromContextWithStdoutStderr(name string, ctx *FakeContext, useCache bool, buildFlags ...string) (string, string, string, error) {
+	args := []string{"build", "-t", name}
+	if !useCache {
+		args = append(args, "--no-cache")
+	}
+	args = append(args, buildFlags...)
+	args = append(args, ".")
+	buildCmd := exec.Command(dockerBinary, args...)
+	buildCmd.Dir = ctx.Dir
+
+	stdout, stderr, exitCode, err := runCommandWithStdoutStderr(buildCmd)
+	if err != nil || exitCode != 0 {
+		return "", stdout, stderr, fmt.Errorf("failed to build the image: %s", stdout)
+	}
+	id, err := getIDByName(name)
+	if err != nil {
+		return "", stdout, stderr, err
+	}
+	return id, stdout, stderr, nil
+}
+
+func buildImageFromGitWithStdoutStderr(name string, ctx *fakeGit, useCache bool, buildFlags ...string) (string, string, string, error) {
+	args := []string{"build", "-t", name}
+	if !useCache {
+		args = append(args, "--no-cache")
+	}
+	args = append(args, buildFlags...)
+	args = append(args, ctx.RepoURL)
+	buildCmd := exec.Command(dockerBinary, args...)
+
+	stdout, stderr, exitCode, err := runCommandWithStdoutStderr(buildCmd)
+	if err != nil || exitCode != 0 {
+		return "", stdout, stderr, fmt.Errorf("failed to build the image: %s", stdout)
+	}
+	id, err := getIDByName(name)
+	if err != nil {
+		return "", stdout, stderr, err
+	}
+	return id, stdout, stderr, nil
 }
 
 func buildImageFromPath(name, path string, useCache bool, buildFlags ...string) (string, error) {
@@ -1513,9 +1583,8 @@ func daemonTime(c *check.C) time.Time {
 	return dt
 }
 
-func setupRegistry(c *check.C) *testRegistryV2 {
-	testRequires(c, RegistryHosting)
-	reg, err := newTestRegistryV2(c)
+func setupRegistry(c *check.C, schema1, auth bool) *testRegistryV2 {
+	reg, err := newTestRegistryV2(c, schema1, auth)
 	c.Assert(err, check.IsNil)
 
 	// Wait for registry to be ready to serve requests.
@@ -1526,12 +1595,11 @@ func setupRegistry(c *check.C) *testRegistryV2 {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	c.Assert(err, check.IsNil, check.Commentf("Timeout waiting for test registry to become available"))
+	c.Assert(err, check.IsNil, check.Commentf("Timeout waiting for test registry to become available: %v", err))
 	return reg
 }
 
 func setupNotary(c *check.C) *testNotary {
-	testRequires(c, NotaryHosting)
 	ts, err := newTestNotary(c)
 	c.Assert(err, check.IsNil)
 
@@ -1622,10 +1690,15 @@ func waitExited(contID string, duration time.Duration) error {
 // in the inspect output. It will wait until the specified timeout (in seconds)
 // is reached.
 func waitInspect(name, expr, expected string, timeout time.Duration) error {
+	return waitInspectWithArgs(name, expr, expected, timeout)
+}
+
+func waitInspectWithArgs(name, expr, expected string, timeout time.Duration, arg ...string) error {
 	after := time.After(timeout)
 
+	args := append(arg, "inspect", "-f", expr, name)
 	for {
-		cmd := exec.Command(dockerBinary, "inspect", "-f", expr, name)
+		cmd := exec.Command(dockerBinary, args...)
 		out, _, err := runCommandWithOutput(cmd)
 		if err != nil {
 			if !strings.Contains(out, "No such") {
@@ -1662,4 +1735,29 @@ func getInspectBody(c *check.C, version, id string) []byte {
 	c.Assert(err, check.IsNil)
 	c.Assert(status, check.Equals, http.StatusOK)
 	return body
+}
+
+// Run a long running idle task in a background container using the
+// system-specific default image and command.
+func runSleepingContainer(c *check.C, extraArgs ...string) (string, int) {
+	return runSleepingContainerInImage(c, defaultSleepImage, extraArgs...)
+}
+
+// Run a long running idle task in a background container using the specified
+// image and the system-specific command.
+func runSleepingContainerInImage(c *check.C, image string, extraArgs ...string) (string, int) {
+	args := []string{"run", "-d"}
+	args = append(args, extraArgs...)
+	args = append(args, image)
+	args = append(args, defaultSleepCommand...)
+	return dockerCmd(c, args...)
+}
+
+// minimalBaseImage returns the name of the minimal base image for the current
+// daemon platform.
+func minimalBaseImage() string {
+	if daemonPlatform == "windows" {
+		return WindowsBaseImage
+	}
+	return "scratch"
 }

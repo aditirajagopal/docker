@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -49,7 +50,7 @@ func (s *DockerSuite) TestApiVersionStatusCode(c *check.C) {
 }
 
 func (s *DockerSuite) TestApiClientVersionNewerThanServer(c *check.C) {
-	v := strings.Split(string(api.DefaultVersion), ".")
+	v := strings.Split(api.DefaultVersion.String(), ".")
 	vMinInt, err := strconv.Atoi(v[1])
 	c.Assert(err, checker.IsNil)
 	vMinInt++
@@ -59,11 +60,12 @@ func (s *DockerSuite) TestApiClientVersionNewerThanServer(c *check.C) {
 	status, body, err := sockRequest("GET", "/v"+version+"/version", nil)
 	c.Assert(err, checker.IsNil)
 	c.Assert(status, checker.Equals, http.StatusBadRequest)
-	c.Assert(len(string(body)), check.Not(checker.Equals), 0) // Expected not empty body
+	expected := fmt.Sprintf("client is newer than server (client API version: %s, server API version: %s)", version, api.DefaultVersion)
+	c.Assert(strings.TrimSpace(string(body)), checker.Equals, expected)
 }
 
 func (s *DockerSuite) TestApiClientVersionOldNotSupported(c *check.C) {
-	v := strings.Split(string(api.MinVersion), ".")
+	v := strings.Split(api.MinVersion.String(), ".")
 	vMinInt, err := strconv.Atoi(v[1])
 	c.Assert(err, checker.IsNil)
 	vMinInt--
@@ -73,7 +75,8 @@ func (s *DockerSuite) TestApiClientVersionOldNotSupported(c *check.C) {
 	status, body, err := sockRequest("GET", "/v"+version+"/version", nil)
 	c.Assert(err, checker.IsNil)
 	c.Assert(status, checker.Equals, http.StatusBadRequest)
-	c.Assert(len(string(body)), checker.Not(check.Equals), 0) // Expected not empty body
+	expected := fmt.Sprintf("client version %s is too old. Minimum supported API version is %s, please upgrade your client to a newer version", version, api.MinVersion)
+	c.Assert(strings.TrimSpace(string(body)), checker.Equals, expected)
 }
 
 func (s *DockerSuite) TestApiDockerApiVersion(c *check.C) {

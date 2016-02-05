@@ -7,8 +7,10 @@ import (
 
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/daemon/execdriver"
+	"github.com/docker/docker/daemon/execdriver/windows"
 	derr "github.com/docker/docker/errors"
 	"github.com/docker/docker/layer"
+	networktypes "github.com/docker/engine-api/types/network"
 	"github.com/docker/libnetwork"
 )
 
@@ -17,7 +19,7 @@ func (daemon *Daemon) setupLinkedContainers(container *container.Container) ([]s
 }
 
 // updateContainerNetworkSettings update the network settings
-func (daemon *Daemon) updateContainerNetworkSettings(container *container.Container) error {
+func (daemon *Daemon) updateContainerNetworkSettings(container *container.Container, endpointsConfig map[string]*networktypes.EndpointSettings) error {
 	return nil
 }
 
@@ -26,12 +28,17 @@ func (daemon *Daemon) initializeNetworking(container *container.Container) error
 }
 
 // ConnectToNetwork connects a container to the network
-func (daemon *Daemon) ConnectToNetwork(container *container.Container, idOrName string) error {
+func (daemon *Daemon) ConnectToNetwork(container *container.Container, idOrName string, endpointConfig *networktypes.EndpointSettings) error {
+	return nil
+}
+
+// ForceEndpointDelete deletes an endpoing from a network forcefully
+func (daemon *Daemon) ForceEndpointDelete(name string, n libnetwork.Network) error {
 	return nil
 }
 
 // DisconnectFromNetwork disconnects a container from the network.
-func (daemon *Daemon) DisconnectFromNetwork(container *container.Container, n libnetwork.Network) error {
+func (daemon *Daemon) DisconnectFromNetwork(container *container.Container, n libnetwork.Network, force bool) error {
 	return nil
 }
 
@@ -47,7 +54,7 @@ func (daemon *Daemon) populateCommand(c *container.Container, env []string) erro
 		if !c.Config.NetworkDisabled {
 			en.Interface = &execdriver.NetworkInterface{
 				MacAddress:   c.Config.MacAddress,
-				Bridge:       daemon.configStore.Bridge.VirtualSwitchName,
+				Bridge:       daemon.configStore.bridgeConfig.VirtualSwitchName,
 				PortBindings: c.HostConfig.PortBindings,
 
 				// TODO Windows. Include IPAddress. There already is a
@@ -97,17 +104,26 @@ func (daemon *Daemon) populateCommand(c *container.Container, env []string) erro
 		}
 	}
 
-	m, err := daemon.layerStore.Metadata(c.ID)
+	m, err := c.RWLayer.Metadata()
 	if err != nil {
 		return derr.ErrorCodeGetLayerMetadata.WithArgs(err)
 	}
 	layerFolder := m["dir"]
 
+	var hvPartition bool
+	// Work out the isolation (whether it is a hypervisor partition)
+	if c.HostConfig.Isolation.IsDefault() {
+		// Not specified by caller. Take daemon default
+		hvPartition = windows.DefaultIsolation.IsHyperV()
+	} else {
+		// Take value specified by caller
+		hvPartition = c.HostConfig.Isolation.IsHyperV()
+	}
+
 	c.Command = &execdriver.Command{
 		CommonCommand: execdriver.CommonCommand{
 			ID:            c.ID,
 			Rootfs:        c.BaseFS,
-			InitPath:      "/.dockerinit",
 			WorkingDir:    c.Config.WorkingDir,
 			Network:       en,
 			MountLabel:    c.GetMountLabel(),
@@ -119,8 +135,9 @@ func (daemon *Daemon) populateCommand(c *container.Container, env []string) erro
 		LayerFolder: layerFolder,
 		LayerPaths:  layerPaths,
 		Hostname:    c.Config.Hostname,
-		Isolation:   c.HostConfig.Isolation,
+		Isolation:   string(c.HostConfig.Isolation),
 		ArgsEscaped: c.Config.ArgsEscaped,
+		HvPartition: hvPartition,
 	}
 
 	return nil

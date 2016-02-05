@@ -31,14 +31,13 @@ func init() {
 // Init returns a new BTRFS driver.
 // An error is returned if BTRFS is not supported.
 func Init(home string, options []string, uidMaps, gidMaps []idtools.IDMap) (graphdriver.Driver, error) {
-	rootdir := path.Dir(home)
 
-	var buf syscall.Statfs_t
-	if err := syscall.Statfs(rootdir, &buf); err != nil {
+	fsMagic, err := graphdriver.GetFSMagic(home)
+	if err != nil {
 		return nil, err
 	}
 
-	if graphdriver.FsMagic(buf.Type) != graphdriver.FsMagicBtrfs {
+	if fsMagic != graphdriver.FsMagicBtrfs {
 		return nil, graphdriver.ErrPrerequisites
 	}
 
@@ -257,11 +256,23 @@ func (d *Driver) Create(id, parent, mountLabel string) error {
 			return err
 		}
 	} else {
-		parentDir, err := d.Get(parent, "")
+		parentDir := d.subvolumesDirID(parent)
+		st, err := os.Stat(parentDir)
 		if err != nil {
 			return err
 		}
+		if !st.IsDir() {
+			return fmt.Errorf("%s: not a direcotory", parentDir)
+		}
 		if err := subvolSnapshot(parentDir, subvolumes, id); err != nil {
+			return err
+		}
+	}
+
+	// if we have a remapped root (user namespaces enabled), change the created snapshot
+	// dir ownership to match
+	if rootUID != 0 || rootGID != 0 {
+		if err := os.Chown(path.Join(subvolumes, id), rootUID, rootGID); err != nil {
 			return err
 		}
 	}
@@ -278,7 +289,10 @@ func (d *Driver) Remove(id string) error {
 	if err := subvolDelete(d.subvolumesDir(), id); err != nil {
 		return err
 	}
-	return os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Get the requested filesystem id.

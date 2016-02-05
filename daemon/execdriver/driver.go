@@ -39,12 +39,6 @@ type Hooks struct {
 	PostStop []DriverCallback
 }
 
-// Info is driver specific information based on
-// processes registered with the driver
-type Info interface {
-	IsRunning() bool
-}
-
 // Terminal represents a pseudo TTY, it is for when
 // using a container interactively.
 type Terminal interface {
@@ -75,10 +69,6 @@ type Driver interface {
 	// Name returns the name of the driver.
 	Name() string
 
-	// Info returns the configuration stored in the driver struct,
-	// "temporary" hack (until we move state from core to plugins).
-	Info(id string) Info
-
 	// GetPidsForContainer returns a list of pid for the processes running in a container.
 	GetPidsForContainer(id string) ([]int, error)
 
@@ -90,6 +80,9 @@ type Driver interface {
 
 	// Stats returns resource stats for a running container
 	Stats(id string) (*ResourceStats, error)
+
+	// Update updates resource configs for a container
+	Update(c *Command) error
 
 	// SupportsHooks refers to the driver capability to exploit pre/post hook functionality
 	SupportsHooks() bool
@@ -128,7 +121,6 @@ type CommonProcessConfig struct {
 type CommonCommand struct {
 	ContainerPid  int           `json:"container_pid"` // the pid for the process inside a container
 	ID            string        `json:"id"`
-	InitPath      string        `json:"initpath"`    // dockerinit
 	MountLabel    string        `json:"mount_label"` // TODO Windows. More involved, but can be factored out
 	Mounts        []Mount       `json:"mounts"`
 	Network       *Network      `json:"network"`
