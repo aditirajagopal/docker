@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/docker/docker/api/types"
+	"golang.org/x/net/context"
+
 	Cli "github.com/docker/docker/cli"
 	flag "github.com/docker/docker/pkg/mflag"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/engine-api/types"
 )
 
 var validDrivers = map[string]bool{
@@ -48,7 +50,7 @@ func (cli *DockerCli) CmdLogs(args ...string) error {
 		Follow:      *follow,
 		Tail:        *tail,
 	}
-	responseBody, err := cli.client.ContainerLogs(options)
+	responseBody, err := cli.client.ContainerLogs(context.Background(), options)
 	if err != nil {
 		return err
 	}

@@ -4,7 +4,7 @@ title = "Remote API v1.22"
 description = "API Documentation for Docker"
 keywords = ["API, Docker, rcli, REST,  documentation"]
 [menu.main]
-parent="smn_remoteapi"
+parent="engine_remoteapi"
 weight=-3
 +++
 <![end-metadata]-->
@@ -15,7 +15,7 @@ weight=-3
 
  - The Remote API has replaced `rcli`.
  - The daemon listens on `unix:///var/run/docker.sock` but you can
-   [Bind Docker to another host/port or a Unix socket](../../userguide/basics.md#bind-docker-to-another-host-port-or-a-unix-socket).
+   [Bind Docker to another host/port or a Unix socket](../../quickstart.md#bind-docker-to-another-host-port-or-a-unix-socket).
  - The API tends to be REST. However, for some complex commands, like `attach`
    or `pull`, the HTTP connection is hijacked to transport `stdout`,
    `stdin` and `stderr`.
@@ -61,6 +61,7 @@ List containers
                  "NetworkSettings": {
                          "Networks": {
                                  "bridge": {
+                                          "NetworkID": "7ea29fc1412292a2d7bba362f9253545fecdfa8ce9a6e37dd10ba8bee7129812",
                                           "EndpointID": "2cdc4edb1ded3631c81f57966563e5c8525b81121bb3706a9a9a3ae102711f3f",
                                           "Gateway": "172.17.0.1",
                                           "IPAddress": "172.17.0.2",
@@ -88,6 +89,7 @@ List containers
                  "NetworkSettings": {
                          "Networks": {
                                  "bridge": {
+                                          "NetworkID": "7ea29fc1412292a2d7bba362f9253545fecdfa8ce9a6e37dd10ba8bee7129812",
                                           "EndpointID": "88eaed7b37b38c2a3f0c4bc796494fdf51b270c2d22656412a2ca5d559a64d7a",
                                           "Gateway": "172.17.0.1",
                                           "IPAddress": "172.17.0.8",
@@ -116,6 +118,7 @@ List containers
                  "NetworkSettings": {
                          "Networks": {
                                  "bridge": {
+                                          "NetworkID": "7ea29fc1412292a2d7bba362f9253545fecdfa8ce9a6e37dd10ba8bee7129812",
                                           "EndpointID": "8b27c041c30326d59cd6e6f510d4f8d1d570a228466f956edf7815508f78e30d",
                                           "Gateway": "172.17.0.1",
                                           "IPAddress": "172.17.0.6",
@@ -144,6 +147,7 @@ List containers
                  "NetworkSettings": {
                          "Networks": {
                                  "bridge": {
+                                          "NetworkID": "7ea29fc1412292a2d7bba362f9253545fecdfa8ce9a6e37dd10ba8bee7129812",
                                           "EndpointID": "d91c7b2f0644403d7ef3095985ea0e2370325cd2332ff3a3225c4247328e66e9",
                                           "Gateway": "172.17.0.1",
                                           "IPAddress": "172.17.0.5",
@@ -220,10 +224,13 @@ Create a container
            },
            "Mounts": [
              {
+               "Name": "fac362...80535",
                "Source": "/data",
                "Destination": "/data",
+               "Driver": "local",
                "Mode": "ro,Z",
-               "RW": false
+               "RW": false,
+               "Propagation": ""
              }
            ],
            "WorkingDir": "",
@@ -248,7 +255,9 @@ Create a container
              "BlkioWeight": 300,
              "BlkioWeightDevice": [{}],
              "BlkioDeviceReadBps": [{}],
+             "BlkioDeviceReadIOps": [{}],
              "BlkioDeviceWriteBps": [{}],
+             "BlkioDeviceWriteIOps": [{}],
              "MemorySwappiness": 60,
              "OomKillDisable": false,
              "OomScoreAdj": 500,
@@ -263,6 +272,7 @@ Create a container
              "VolumesFrom": ["parent", "other:ro"],
              "CapAdd": ["NET_ADMIN"],
              "CapDrop": ["MKNOD"],
+             "GroupAdd": ["newgroup"],
              "RestartPolicy": { "Name": "", "MaximumRetryCount": 0 },
              "NetworkMode": "bridge",
              "Devices": [],
@@ -293,7 +303,7 @@ Json Parameters:
       for the container.
 -   **User** - A string value specifying the user inside the container.
 -   **Memory** - Memory limit in bytes.
--   **MemorySwap** - Total memory limit (memory + swap); set `-1` to disable swap
+-   **MemorySwap** - Total memory limit (memory + swap); set `-1` to enable unlimited swap.
       You must use this with `memory` and make the swap value larger than `memory`.
 -   **MemoryReservation** - Memory soft limit in bytes.
 -   **KernelMemory** - Kernel memory limit in bytes.
@@ -306,10 +316,14 @@ Json Parameters:
 -   **CpusetMems** - Memory nodes (MEMs) in which to allow execution (0-3, 0,1). Only effective on NUMA systems.
 -   **BlkioWeight** - Block IO weight (relative weight) accepts a weight value between 10 and 1000.
 -   **BlkioWeightDevice** - Block IO weight (relative device weight) in the form of:        `"BlkioWeightDevice": [{"Path": "device_path", "Weight": weight}]`
--   **BlkioDeviceReadBps** - Limit read rate from a device in form of:	`"BlkioDeviceReadBps": [{"Path": "device_path", "Rate": rate}]`, for example:
+-   **BlkioDeviceReadBps** - Limit read rate (bytes per second) from a device in the form of:	`"BlkioDeviceReadBps": [{"Path": "device_path", "Rate": rate}]`, for example:
 	`"BlkioDeviceReadBps": [{"Path": "/dev/sda", "Rate": "1024"}]"`
--   **BlkioDeviceWriteBps** - Limit write rate to a device in the form of:	`"BlkioDeviceWriteBps": [{"Path": "device_path", "Rate": rate}]`, for example:
+-   **BlkioDeviceWriteBps** - Limit write rate (bytes per second) to a device in the form of:	`"BlkioDeviceWriteBps": [{"Path": "device_path", "Rate": rate}]`, for example:
 	`"BlkioDeviceWriteBps": [{"Path": "/dev/sda", "Rate": "1024"}]"`
+-   **BlkioDeviceReadIOps** - Limit read rate (IO per second) from a device in the form of:	`"BlkioDeviceReadIOps": [{"Path": "device_path", "Rate": rate}]`, for example:
+	`"BlkioDeviceReadIOps": [{"Path": "/dev/sda", "Rate": "1000"}]`
+-   **BlkioDeviceWiiteIOps** - Limit write rate (IO per second) to a device in the form of:	`"BlkioDeviceWriteIOps": [{"Path": "device_path", "Rate": rate}]`, for example:
+	`"BlkioDeviceWriteIOps": [{"Path": "/dev/sda", "Rate": "1000"}]`
 -   **MemorySwappiness** - Tune a container's memory swappiness behavior. Accepts an integer between 0 and 100.
 -   **OomKillDisable** - Boolean value, whether to disable OOM Killer for the container or not.
 -   **OomScoreAdj** - An integer value containing the score given to the container in order to tune OOM killer preferences.
@@ -361,6 +375,7 @@ Json Parameters:
           Specified in the form `<container name>[:<ro|rw>]`
     -   **CapAdd** - A list of kernel capabilities to add to the container.
     -   **Capdrop** - A list of kernel capabilities to drop from the container.
+    -   **GroupAdd** - A list of additional groups that the container process will run as
     -   **RestartPolicy** – The behavior to apply when the container exits.  The
             value is an object with a `Name` property of either `"always"` to
             always restart, `"unless-stopped"` to restart always except when
@@ -465,6 +480,8 @@ Return low-level information on the container `id`
 			"BlkioWeightDevice": [{}],
 			"BlkioDeviceReadBps": [{}],
 			"BlkioDeviceWriteBps": [{}],
+			"BlkioDeviceReadIOps": [{}],
+			"BlkioDeviceWriteIOps": [{}],
 			"CapAdd": null,
 			"CapDrop": null,
 			"ContainerIDFile": "",
@@ -532,14 +549,15 @@ Return low-level information on the container `id`
 			"MacAddress": "",
 			"Networks": {
 				"bridge": {
-					"EndpointID": "",
-					"Gateway": "",
-					"IPAddress": "",
-					"IPPrefixLen": 0,
+					"NetworkID": "7ea29fc1412292a2d7bba362f9253545fecdfa8ce9a6e37dd10ba8bee7129812",
+					"EndpointID": "7587b82f0dada3656fda26588aee72630c6fab1536d36e394b2bfbcf898c971d",
+					"Gateway": "172.17.0.1",
+					"IPAddress": "172.17.0.2",
+					"IPPrefixLen": 16,
 					"IPv6Gateway": "",
 					"GlobalIPv6Address": "",
 					"GlobalIPv6PrefixLen": 0,
-					"MacAddress": ""
+					"MacAddress": "02:42:ac:12:00:02"
 				}
 			}
 		},
@@ -562,10 +580,13 @@ Return low-level information on the container `id`
 		},
 		"Mounts": [
 			{
+				"Name": "fac362...80535",
 				"Source": "/data",
 				"Destination": "/data",
+				"Driver": "local",
 				"Mode": "ro,Z",
-				"RW": false
+				"RW": false,
+				"Propagation": ""
 			}
 		]
 	}
@@ -914,6 +935,12 @@ Start the container `id`
 
     HTTP/1.1 204 No Content
 
+Query Parameters:
+
+-   **detachKeys** – Override the key sequence for detaching a
+        container. Format is a single character `[a-Z]` or `ctrl-<value>`
+        where `<value>` is one of: `a-z`, `@`, `^`, `[`, `,` or `_`.
+
 Status Codes:
 
 -   **204** – no error
@@ -992,6 +1019,46 @@ Query Parameters
 Status Codes:
 
 -   **204** – no error
+-   **404** – no such container
+-   **500** – server error
+
+### Update a container
+
+`POST /containers/(id)/update`
+
+Update resource configs of one or more containers.
+
+**Example request**:
+
+       POST /containers/(id)/update HTTP/1.1
+       Content-Type: application/json
+
+       {
+         "BlkioWeight": 300,
+         "CpuShares": 512,
+         "CpuPeriod": 100000,
+         "CpuQuota": 50000,
+         "CpusetCpus": "0,1",
+         "CpusetMems": "0",
+         "Memory": 314572800,
+         "MemorySwap": 514288000,
+         "MemoryReservation": 209715200,
+         "KernelMemory": 52428800,
+       }
+
+**Example response**:
+
+       HTTP/1.1 200 OK
+       Content-Type: application/json
+
+       {
+           "Warnings": []
+       }
+
+Status Codes:
+
+-   **200** – no error
+-   **400** – bad parameter
 -   **404** – no such container
 -   **500** – server error
 
@@ -1081,6 +1148,9 @@ Attach to the container `id`
 
 Query Parameters:
 
+-   **detachKeys** – Override the key sequence for detaching a
+        container. Format is a single character `[a-Z]` or `ctrl-<value>`
+        where `<value>` is one of: `a-z`, `@`, `^`, `[`, `,` or `_`.
 -   **logs** – 1/True/true or 0/False/false, return logs. Default `false`.
 -   **stream** – 1/True/true or 0/False/false, return stream.
         Default `false`.
@@ -1161,6 +1231,9 @@ Implements websocket protocol handshake according to [RFC 6455](http://tools.iet
 
 Query Parameters:
 
+-   **detachKeys** – Override the key sequence for detaching a
+        container. Format is a single character `[a-Z]` or `ctrl-<value>`
+        where `<value>` is one of: `a-z`, `@`, `^`, `[`, `,` or `_`.
 -   **logs** – 1/True/true or 0/False/false, return logs. Default `false`.
 -   **stream** – 1/True/true or 0/False/false, return stream.
         Default `false`.
@@ -1518,7 +1591,7 @@ Query Parameters:
 -   **rm** - Remove intermediate containers after a successful build (default behavior).
 -   **forcerm** - Always remove intermediate containers (includes `rm`).
 -   **memory** - Set memory limit for build.
--   **memswap** - Total memory (memory + swap), `-1` to disable swap.
+-   **memswap** - Total memory (memory + swap), `-1` to enable unlimited swap.
 -   **cpushares** - CPU shares (relative weight).
 -   **cpusetcpus** - CPUs in which to allow execution (e.g., `0-3`, `0,1`).
 -   **cpuperiod** - The length of a CPU period in microseconds.
@@ -2015,6 +2088,9 @@ Display system-wide information
     {
         "Architecture": "x86_64",
         "Containers": 11,
+        "ContainersRunning": 7,
+        "ContainersStopped": 3,
+        "ContainersPaused": 1,
         "CpuCfsPeriod": true,
         "CpuCfsQuota": true,
         "Debug": false,
@@ -2022,6 +2098,7 @@ Display system-wide information
         "DockerRootDir": "/var/lib/docker",
         "Driver": "btrfs",
         "DriverStatus": [[""]],
+        "SystemStatus": [["State", "Healthy"]],
         "Plugins": {
             "Volume": [
                 "local"
@@ -2211,16 +2288,23 @@ Status Codes:
 
 `GET /events`
 
-Get container events from docker, either in real time via streaming, or via
-polling (using since).
+Get container events from docker, either in real time via streaming, or via polling (using since).
 
 Docker containers report the following events:
 
-    attach, commit, copy, create, destroy, die, exec_create, exec_start, export, kill, oom, pause, rename, resize, restart, start, stop, top, unpause
+    attach, commit, copy, create, destroy, die, exec_create, exec_start, export, kill, oom, pause, rename, resize, restart, start, stop, top, unpause, update
 
-and Docker images report:
+Docker images report the following events:
 
     delete, import, pull, push, tag, untag
+
+Docker volumes report the following events:
+
+    create, mount, unmount, destroy
+
+Docker networks report the following events:
+
+    create, connect, disconnect, destroy
 
 **Example request**:
 
@@ -2231,10 +2315,48 @@ and Docker images report:
     HTTP/1.1 200 OK
     Content-Type: application/json
 
-    {"status":"pull","id":"busybox:latest","time":1442421700,"timeNano":1442421700598988358}
-    {"status":"create","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716853979870}
-    {"status":"attach","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716894759198}
-    {"status":"start","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716983607193}
+    [
+	    {
+		"action": "pull",
+		"type": "image",
+		"actor": {
+			"id": "busybox:latest",
+			"attributes": {}
+		}
+		"time": 1442421700,
+		"timeNano": 1442421700598988358
+	    },
+            {
+		"action": "create",
+		"type": "container",
+		"actor": {
+			"id": "5745704abe9caa5",
+			"attributes": {"image": "busybox"}
+		}
+		"time": 1442421716,
+		"timeNano": 1442421716853979870
+	    },
+            {
+		"action": "attach",
+		"type": "container",
+		"actor": {
+			"id": "5745704abe9caa5",
+			"attributes": {"image": "busybox"}
+		}
+		"time": 1442421716,
+		"timeNano": 1442421716894759198
+	    },
+            {
+		"action": "start",
+		"type": "container",
+		"actor": {
+			"id": "5745704abe9caa5",
+			"attributes": {"image": "busybox"}
+		}
+		"time": 1442421716,
+		"timeNano": 1442421716983607193
+	    }
+    ]
 
 Query Parameters:
 
@@ -2245,6 +2367,9 @@ Query Parameters:
   -   `event=<string>`; -- event to filter
   -   `image=<string>`; -- image to filter
   -   `label=<string>`; -- image and container label to filter
+  -   `type=<string>`; -- either `container` or `image` or `volume` or `network`
+  -   `volume=<string>`; -- volume to filter
+  -   `network=<string>`; -- network to filter
 
 Status Codes:
 
@@ -2368,6 +2493,7 @@ Sets up an exec instance in a running container `id`
        "AttachStdin": false,
        "AttachStdout": true,
        "AttachStderr": true,
+       "DetachKeys": "ctrl-p,ctrl-q",
        "Tty": false,
        "Cmd": [
                      "date"
@@ -2389,6 +2515,9 @@ Json Parameters:
 -   **AttachStdin** - Boolean value, attaches to `stdin` of the `exec` command.
 -   **AttachStdout** - Boolean value, attaches to `stdout` of the `exec` command.
 -   **AttachStderr** - Boolean value, attaches to `stderr` of the `exec` command.
+-   **DetachKeys** – Override the key sequence for detaching a
+        container. Format is a single character `[a-Z]` or `ctrl-<value>`
+        where `<value>` is one of: `a-z`, `@`, `^`, `[`, `,` or `_`.
 -   **Tty** - Boolean value to allocate a pseudo-TTY.
 -   **Cmd** - Command to run specified as a string or an array of strings.
 
@@ -2560,14 +2689,15 @@ Return low-level information about the `exec` command `id`.
             "MacAddress": "",
             "Networks": {
                 "bridge": {
-                    "EndpointID": "",
-                    "Gateway": "",
-                    "IPAddress": "",
-                    "IPPrefixLen": 0,
+                    "NetworkID": "7ea29fc1412292a2d7bba362f9253545fecdfa8ce9a6e37dd10ba8bee7129812",
+                    "EndpointID": "7587b82f0dada3656fda26588aee72630c6fab1536d36e394b2bfbcf898c971d",
+                    "Gateway": "172.17.0.1",
+                    "IPAddress": "172.17.0.2",
+                    "IPPrefixLen": 16,
                     "IPv6Gateway": "",
                     "GlobalIPv6Address": "",
                     "GlobalIPv6PrefixLen": 0,
-                    "MacAddress": ""
+                    "MacAddress": "02:42:ac:12:00:02"
                 }
             }
         },
@@ -2699,7 +2829,7 @@ Instruct the driver to remove the volume (`name`).
 
 **Example request**:
 
-    DELETE /volumes/local/tardis HTTP/1.1
+    DELETE /volumes/tardis HTTP/1.1
 
 **Example response**:
 
@@ -2720,7 +2850,7 @@ Status Codes
 
 **Example request**:
 
-    GET /networks HTTP/1.1
+    GET /networks?filters={"type":{"custom":true}} HTTP/1.1
 
 **Example response**:
 
@@ -2786,11 +2916,12 @@ Content-Type: application/json
 ]
 ```
 
-
-
 Query Parameters:
 
-- **filters** - JSON encoded value of the filters (a `map[string][]string`) to process on the networks list. Available filters: `name=[network-names]` , `id=[network-ids]`
+- **filters** - JSON encoded network list filter. The filter value is one of:
+  -   `name=<network-name>` Matches all or part of a network name.
+  -   `id=<network-id>` Matches all or part of a network id.
+  -   `type=["custom"|"builtin"]` Filters networks by type. The `custom` keyword returns all user-defined networks.
 
 Status Codes:
 
@@ -2803,7 +2934,7 @@ Status Codes:
 
 **Example request**:
 
-    GET /networks/f2de39df4171b0dc801e8002d1d999b77256983dfc63041c0f34030aa3977566 HTTP/1.1
+    GET /networks/7d86d31b1478e7cca9ebed7e73aa0fdeec46c5ca29497431d3007d2d9e15ed99 HTTP/1.1
 
 **Example response**:
 
@@ -2812,24 +2943,28 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  "Name": "bridge",
-  "Id": "f2de39df4171b0dc801e8002d1d999b77256983dfc63041c0f34030aa3977566",
+  "Name": "net01",
+  "Id": "7d86d31b1478e7cca9ebed7e73aa0fdeec46c5ca29497431d3007d2d9e15ed99",
   "Scope": "local",
   "Driver": "bridge",
   "IPAM": {
     "Driver": "default",
     "Config": [
       {
-        "Subnet": "172.17.0.0/16"
+        "Subnet": "172.19.0.0/16",
+        "Gateway": "172.19.0.1/16"
       }
-    ]
+    ],
+    "Options": {
+        "foo": "bar"
+    }
   },
   "Containers": {
-    "39b69226f9d79f5634485fb236a23b2fe4e96a0a94128390a7fbbcc167065867": {
-      "Name": "mad_mclean",
-      "EndpointID": "ed2419a97c1d9954d05b46e462e7002ea552f216e9b136b80a7db8d98b442eda",
-      "MacAddress": "02:42:ac:11:00:02",
-      "IPv4Address": "172.17.0.2/16",
+    "19a4d5d687db25203351ed79d478946f861258f018fe384f229f2efa4b23513c": {
+      "Name": "test",
+      "EndpointID": "628cadb8bcb92de107b2a1e516cbffe463e321f548feb37697cce00ad694f21a",
+      "MacAddress": "02:42:ac:13:00:02",
+      "IPv4Address": "172.19.0.2/16",
       "IPv6Address": ""
     }
   },
@@ -2858,23 +2993,23 @@ Create a network
 **Example request**:
 
 ```
-Create a network
-
-**Example request**:
-
-```
 POST /networks/create HTTP/1.1
 Content-Type: application/json
 
 {
   "Name":"isolated_nw",
-  "Driver":"bridge"
+  "Driver":"bridge",
   "IPAM":{
     "Config":[{
       "Subnet":"172.20.0.0/16",
       "IPRange":"172.20.10.0/24",
       "Gateway":"172.20.10.11"
-    }]
+    }],
+    "Options": {
+        "foo": "bar"
+    }
+  },
+  "Internal":true
 }
 ```
 
@@ -2917,7 +3052,13 @@ POST /networks/22be93d5babb089c5aab8dbc369042fad48ff791584ca2da2100db837a1c7c30/
 Content-Type: application/json
 
 {
-  "Container":"3613f73ba0e4"
+  "Container":"3613f73ba0e4",
+  "EndpointConfig": {
+    "test_nw": {
+        "IPv4Address":"172.24.56.89",
+        "IPv6Address":"2001:db8::5689"
+    }
+  }
 }
 ```
 
@@ -2927,8 +3068,9 @@ Content-Type: application/json
 
 Status Codes:
 
-- **201** - no error
+- **200** - no error
 - **404** - network or container is not found
+- **500** - Internal Server Error
 
 JSON Parameters:
 
@@ -2947,7 +3089,8 @@ POST /networks/22be93d5babb089c5aab8dbc369042fad48ff791584ca2da2100db837a1c7c30/
 Content-Type: application/json
 
 {
-  "Container":"3613f73ba0e4"
+  "Container":"3613f73ba0e4",
+  "Force":false
 }
 ```
 
@@ -2957,12 +3100,14 @@ Content-Type: application/json
 
 Status Codes:
 
-- **201** - no error
+- **200** - no error
 - **404** - network or container not found
+- **500** - Internal Server Error
 
 JSON Parameters:
 
 - **Container** - container-id/name to be disconnected from a network
+- **Force** - Force the container to disconnect from a network
 
 ### Remove a network
 
@@ -2976,11 +3121,11 @@ Instruct the driver to remove the network (`id`).
 
 **Example response**:
 
-    HTTP/1.1 204 No Content
+    HTTP/1.1 200 OK
 
 Status Codes
 
--   **204** - no error
+-   **200** - no error
 -   **404** - no such network
 -   **500** - server error
 

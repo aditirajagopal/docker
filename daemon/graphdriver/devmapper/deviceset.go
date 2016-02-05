@@ -24,6 +24,7 @@ import (
 	"github.com/docker/docker/daemon/graphdriver"
 	"github.com/docker/docker/pkg/devicemapper"
 	"github.com/docker/docker/pkg/idtools"
+	"github.com/docker/docker/pkg/loopback"
 	"github.com/docker/docker/pkg/mount"
 	"github.com/docker/docker/pkg/parsers"
 	"github.com/docker/go-units"
@@ -34,7 +35,7 @@ import (
 var (
 	defaultDataLoopbackSize     int64  = 100 * 1024 * 1024 * 1024
 	defaultMetaDataLoopbackSize int64  = 2 * 1024 * 1024 * 1024
-	defaultBaseFsSize           uint64 = 100 * 1024 * 1024 * 1024
+	defaultBaseFsSize           uint64 = 10 * 1024 * 1024 * 1024
 	defaultThinpBlockSize       uint32 = 128 // 64K = 128 512b sectors
 	defaultUdevSyncOverride            = false
 	maxDeviceID                        = 0xffffff // 24 bit, pool limit
@@ -46,6 +47,7 @@ var (
 	driverDeferredRemovalSupport = false
 	enableDeferredRemoval        = false
 	enableDeferredDeletion       = false
+	userBaseSize                 = false
 )
 
 const deviceSetMetaFile string = "deviceset-metadata"
@@ -1055,6 +1057,80 @@ func (devices *DeviceSet) setupVerifyBaseImageUUIDFS(baseInfo *devInfo) error {
 	return nil
 }
 
+func (devices *DeviceSet) checkGrowBaseDeviceFS(info *devInfo) error {
+
+	if !userBaseSize {
+		return nil
+	}
+
+	if devices.baseFsSize < devices.getBaseDeviceSize() {
+		return fmt.Errorf("devmapper: Base device size cannot be smaller than %s", units.HumanSize(float64(devices.getBaseDeviceSize())))
+	}
+
+	if devices.baseFsSize == devices.getBaseDeviceSize() {
+		return nil
+	}
+
+	info.lock.Lock()
+	defer info.lock.Unlock()
+
+	devices.Lock()
+	defer devices.Unlock()
+
+	info.Size = devices.baseFsSize
+
+	if err := devices.saveMetadata(info); err != nil {
+		// Try to remove unused device
+		delete(devices.Devices, info.Hash)
+		return err
+	}
+
+	return devices.growFS(info)
+}
+
+func (devices *DeviceSet) growFS(info *devInfo) error {
+	if err := devices.activateDeviceIfNeeded(info, false); err != nil {
+		return fmt.Errorf("Error activating devmapper device: %s", err)
+	}
+
+	defer devices.deactivateDevice(info)
+
+	fsMountPoint := "/run/docker/mnt"
+	if _, err := os.Stat(fsMountPoint); os.IsNotExist(err) {
+		if err := os.MkdirAll(fsMountPoint, 0700); err != nil {
+			return err
+		}
+		defer os.RemoveAll(fsMountPoint)
+	}
+
+	options := ""
+	if devices.BaseDeviceFilesystem == "xfs" {
+		// XFS needs nouuid or it can't mount filesystems with the same fs
+		options = joinMountOptions(options, "nouuid")
+	}
+	options = joinMountOptions(options, devices.mountOptions)
+
+	if err := mount.Mount(info.DevName(), fsMountPoint, devices.BaseDeviceFilesystem, options); err != nil {
+		return fmt.Errorf("Error mounting '%s' on '%s': %s", info.DevName(), fsMountPoint, err)
+	}
+
+	defer syscall.Unmount(fsMountPoint, syscall.MNT_DETACH)
+
+	switch devices.BaseDeviceFilesystem {
+	case "ext4":
+		if out, err := exec.Command("resize2fs", info.DevName()).CombinedOutput(); err != nil {
+			return fmt.Errorf("Failed to grow rootfs:%v:%s", err, string(out))
+		}
+	case "xfs":
+		if out, err := exec.Command("xfs_growfs", info.DevName()).CombinedOutput(); err != nil {
+			return fmt.Errorf("Failed to grow rootfs:%v:%s", err, string(out))
+		}
+	default:
+		return fmt.Errorf("Unsupported filesystem type %s", devices.BaseDeviceFilesystem)
+	}
+	return nil
+}
+
 func (devices *DeviceSet) setupBaseImage() error {
 	oldInfo, _ := devices.lookupDeviceWithLock("")
 
@@ -1068,9 +1144,8 @@ func (devices *DeviceSet) setupBaseImage() error {
 				return err
 			}
 
-			if devices.baseFsSize != defaultBaseFsSize && devices.baseFsSize != devices.getBaseDeviceSize() {
-				logrus.Warnf("devmapper: Base device is already initialized to size %s, new value of base device size %s will not take effect",
-					units.HumanSize(float64(devices.getBaseDeviceSize())), units.HumanSize(float64(devices.baseFsSize)))
+			if err := devices.checkGrowBaseDeviceFS(oldInfo); err != nil {
+				return err
 			}
 
 			return nil
@@ -1170,7 +1245,7 @@ func (devices *DeviceSet) ResizePool(size int64) error {
 		return fmt.Errorf("devmapper: Can't shrink file")
 	}
 
-	dataloopback := devicemapper.FindLoopDeviceFor(datafile)
+	dataloopback := loopback.FindLoopDeviceFor(datafile)
 	if dataloopback == nil {
 		return fmt.Errorf("devmapper: Unable to find loopback mount for: %s", datafilename)
 	}
@@ -1182,7 +1257,7 @@ func (devices *DeviceSet) ResizePool(size int64) error {
 	}
 	defer metadatafile.Close()
 
-	metadataloopback := devicemapper.FindLoopDeviceFor(metadatafile)
+	metadataloopback := loopback.FindLoopDeviceFor(metadatafile)
 	if metadataloopback == nil {
 		return fmt.Errorf("devmapper: Unable to find loopback mount for: %s", metadatafilename)
 	}
@@ -1194,8 +1269,8 @@ func (devices *DeviceSet) ResizePool(size int64) error {
 	}
 
 	// Reload size for loopback device
-	if err := devicemapper.LoopbackSetCapacity(dataloopback); err != nil {
-		return fmt.Errorf("devmapper: Unable to update loopback capacity: %s", err)
+	if err := loopback.SetCapacity(dataloopback); err != nil {
+		return fmt.Errorf("Unable to update loopback capacity: %s", err)
 	}
 
 	// Suspend the pool
@@ -1414,7 +1489,7 @@ func getLoopFileDeviceMajMin(filename string) (string, uint64, uint64, error) {
 	}
 
 	defer file.Close()
-	loopbackDevice := devicemapper.FindLoopDeviceFor(file)
+	loopbackDevice := loopback.FindLoopDeviceFor(file)
 	if loopbackDevice == nil {
 		return "", 0, 0, fmt.Errorf("devmapper: Unable to find loopback mount for: %s", filename)
 	}
@@ -1622,7 +1697,7 @@ func (devices *DeviceSet) initDevmapper(doInit bool) error {
 				return err
 			}
 
-			dataFile, err = devicemapper.AttachLoopDevice(data)
+			dataFile, err = loopback.AttachLoopDevice(data)
 			if err != nil {
 				return err
 			}
@@ -1655,7 +1730,7 @@ func (devices *DeviceSet) initDevmapper(doInit bool) error {
 				return err
 			}
 
-			metadataFile, err = devicemapper.AttachLoopDevice(metadata)
+			metadataFile, err = loopback.AttachLoopDevice(metadata)
 			if err != nil {
 				return err
 			}
@@ -1800,6 +1875,7 @@ func (devices *DeviceSet) deleteTransaction(info *devInfo, syncDelete bool) erro
 		if info.Deleted {
 			devices.nrDeletedDevices--
 		}
+		devices.markDeviceIDFree(info.DeviceID)
 	} else {
 		if err := devices.markForDeferredDeletion(info); err != nil {
 			return err
@@ -1853,8 +1929,6 @@ func (devices *DeviceSet) deleteDevice(info *devInfo, syncDelete bool) error {
 	if err := devices.deleteTransaction(info, syncDelete); err != nil {
 		return err
 	}
-
-	devices.markDeviceIDFree(info.DeviceID)
 
 	return nil
 }
@@ -2378,6 +2452,7 @@ func NewDeviceSet(root string, doInit bool, options []string, uidMaps, gidMaps [
 			if err != nil {
 				return nil, err
 			}
+			userBaseSize = true
 			devices.baseFsSize = uint64(size)
 		case "dm.loopdatasize":
 			size, err := units.RAMInBytes(val)

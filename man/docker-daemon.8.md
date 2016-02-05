@@ -1,4 +1,4 @@
-% DOCKER(1) Docker User Manuals
+% DOCKER(8) Docker User Manuals
 % Shishir Mahajan
 % SEPTEMBER 2015
 # NAME
@@ -7,17 +7,19 @@ docker-daemon - Enable daemon mode
 # SYNOPSIS
 **docker daemon**
 [**--api-cors-header**=[=*API-CORS-HEADER*]]
-[**--authz-plugin**[=*[]*]]
+[**--authorization-plugin**[=*[]*]]
 [**-b**|**--bridge**[=*BRIDGE*]]
 [**--bip**[=*BIP*]]
+[**--cgroup-parent**[=*[]*]]
 [**--cluster-store**[=*[]*]]
 [**--cluster-advertise**[=*[]*]]
 [**--cluster-store-opt**[=*map[]*]]
-[**-D**|**--debug**[=*false*]]
+[**--config-file**[=*/etc/docker/daemon.json*]]
+[**-D**|**--debug**]
 [**--default-gateway**[=*DEFAULT-GATEWAY*]]
 [**--default-gateway-v6**[=*DEFAULT-GATEWAY-V6*]]
 [**--default-ulimit**[=*[]*]]
-[**--disable-legacy-registry**[=*false*]]
+[**--disable-legacy-registry**]
 [**--dns**[=*[]*]]
 [**--dns-opt**[=*[]*]]
 [**--dns-search**[=*[]*]]
@@ -35,23 +37,25 @@ docker-daemon - Enable daemon mode
 [**--ip-forward**[=*true*]]
 [**--ip-masq**[=*true*]]
 [**--iptables**[=*true*]]
-[**--ipv6**[=*false*]]
+[**--ipv6**]
 [**-l**|**--log-level**[=*info*]]
 [**--label**[=*[]*]]
 [**--log-driver**[=*json-file*]]
 [**--log-opt**[=*map[]*]]
 [**--mtu**[=*0*]]
 [**-p**|**--pidfile**[=*/var/run/docker.pid*]]
+[**--raw-logs**]
 [**--registry-mirror**[=*[]*]]
 [**-s**|**--storage-driver**[=*STORAGE-DRIVER*]]
-[**--selinux-enabled**[=*false*]]
+[**--selinux-enabled**]
 [**--storage-opt**[=*[]*]]
-[**--tls**[=*false*]]
+[**--tls**]
 [**--tlscacert**[=*~/.docker/ca.pem*]]
 [**--tlscert**[=*~/.docker/cert.pem*]]
 [**--tlskey**[=*~/.docker/key.pem*]]
-[**--tlsverify**[=*false*]]
+[**--tlsverify**]
 [**--userland-proxy**[=*true*]]
+[**--userns-remap**[=*default*]]
 
 # DESCRIPTION
 **docker** has two distinct functions. It is used for starting the Docker
@@ -71,7 +75,7 @@ format.
 **--api-cors-header**=""
   Set CORS headers in the remote API. Default is cors disabled. Give urls like "http://foo, http://bar, ...". Give "*" to allow all.
 
-**--authz-plugin**=""
+**--authorization-plugin**=""
   Set authorization plugins to load
 
 **-b**, **--bridge**=""
@@ -79,6 +83,9 @@ format.
 
 **--bip**=""
   Use the provided CIDR notation address for the dynamically created bridge (docker0); Mutually exclusive of \-b
+
+**--cgroup-parent**=""
+  Set parent cgroup for all containers. Default is "/docker" for fs cgroup driver and "system.slice" for systemd cgroup driver.
 
 **--cluster-store**=""
   URL of the distributed storage backend
@@ -90,6 +97,9 @@ format.
 
 **--cluster-store-opt**=""
   Specifies options for the Key/Value store.
+
+**--config-file**="/etc/docker/daemon.json"
+  Specifies the JSON file path to load the configuration from.
 
 **-D**, **--debug**=*true*|*false*
   Enable debug mode. Default is false.
@@ -188,6 +198,11 @@ unix://[/path/to/socket] to use.
 **-p**, **--pidfile**=""
   Path to use for daemon PID file. Default is `/var/run/docker.pid`
 
+**--raw-logs**
+Output daemon logs in full timestamp format without ANSI coloring. If this flag is not set,
+the daemon outputs condensed, colorized logs if a terminal is detected, or full ("raw")
+output otherwise.
+
 **--registry-mirror**=*<scheme>://<host>*
   Prepend a registry mirror to be used for image pulls. May be specified multiple times.
 
@@ -218,6 +233,9 @@ unix://[/path/to/socket] to use.
 
 **--userland-proxy**=*true*|*false*
     Rely on a userland proxy implementation for inter-container and outside-to-container loopback communications. Default is true.
+
+**--userns-remap**=*default*|*uid:gid*|*user:group*|*user*|*uid*
+    Enable user namespaces for containers on the daemon. Specifying "default" will cause a new user and group to be created to handle UID and GID range remapping for the user namespace mappings used for contained processes. Specifying a user (or uid) and optionally a group (or gid) will cause the daemon to lookup the user and group's subordinate ID ranges for use as the user namespace mappings for contained processes.
 
 # STORAGE DRIVER OPTIONS
 
@@ -263,11 +281,21 @@ Example use: `docker daemon --storage-opt dm.thinpooldev=/dev/mapper/thin-pool`
 #### dm.basesize
 
 Specifies the size to use when creating the base device, which limits
-the size of images and containers. The default value is 100G. Note,
-thin devices are inherently "sparse", so a 100G device which is mostly
-empty doesn't use 100 GB of space on the pool. However, the filesystem
+the size of images and containers. The default value is 10G. Note,
+thin devices are inherently "sparse", so a 10G device which is mostly
+empty doesn't use 10 GB of space on the pool. However, the filesystem
 will use more space for base images the larger the device
 is.
+
+The base device size can be increased at daemon restart which will allow
+all future images and containers (based on those new images) to be of the 
+new base device size.
+
+Example use: `docker daemon --storage-opt dm.basesize=50G` 
+
+This will increase the base device size to 50G. The Docker daemon will throw an 
+error if existing base device size is larger than 50G. A user can use 
+this option to expand the base device size however shrinking is not permitted.
 
 This value affects the system-wide "base" empty filesystem that may already
 be initialized and inherited by pulled images. Typically, a change to this
@@ -465,10 +493,10 @@ Key/Value store.
 Docker's access authorization can be extended by authorization plugins that your
 organization can purchase or build themselves. You can install one or more
 authorization plugins when you start the Docker `daemon` using the
-`--authz-plugin=PLUGIN_ID` option.
+`--authorization-plugin=PLUGIN_ID` option.
 
 ```bash
-docker daemon --authz-plugin=plugin1 --authz-plugin=plugin2,...
+docker daemon --authorization-plugin=plugin1 --authorization-plugin=plugin2,...
 ```
 
 The `PLUGIN_ID` value is either the plugin's name or a path to its specification

@@ -4,7 +4,8 @@ title = "Docker run reference"
 description = "Configure containers at runtime"
 keywords = ["docker, run, configure,  runtime"]
 [menu.main]
-parent = "mn_reference"
+parent = "engine_ref"
+weight=-80
 +++
 <![end-metadata]-->
 
@@ -123,9 +124,9 @@ pretend to be a TTY (this is what most command line executables expect)
 and pass along signals. All of that is configurable:
 
     -a=[]           : Attach to `STDIN`, `STDOUT` and/or `STDERR`
-    -t=false        : Allocate a pseudo-tty
+    -t              : Allocate a pseudo-tty
     --sig-proxy=true: Proxy all received signals to the process (non-TTY mode only)
-    -i=false        : Keep STDIN open even if not attached
+    -i              : Keep STDIN open even if not attached
 
 If you do not specify `-a` then Docker will [attach all standard
 streams]( https://github.com/docker/docker/blob/75a7f4d90cde0295bcfb7213004abce8d4779b75/commands.go#L1797).
@@ -206,10 +207,27 @@ on the system.  For example, you could build a container with debugging tools
 like `strace` or `gdb`, but want to use these tools when debugging processes
 within the container.
 
-    $ docker run --pid=host rhel7 strace -p 1234
+### Example: run htop inside a container
 
-This command would allow you to use `strace` inside the container on pid 1234 on
-the host.
+Create this Dockerfile:
+
+```
+FROM alpine:latest
+RUN apk add --update htop && rm -rf /var/cache/apk/*
+CMD ["htop"]
+```
+
+Build the Dockerfile and tag the image as `myhtop`:
+
+```bash
+$ docker build -t myhtop .
+```
+
+Use the following command to run `htop` inside a container:
+
+```
+$ docker run -it --rm --pid=host myhtop
+```
 
 ## UTS settings (--uts)
 
@@ -256,8 +274,11 @@ of the containers.
                         'container:<name|id>': reuse another container's network stack
                         'host': use the Docker host network stack
                         '<network-name>|<network-id>': connect to a user-defined network
+    --net-alias=[]   : Add network-scoped alias for the container
     --add-host=""    : Add a line to /etc/hosts (host:IP)
     --mac-address="" : Sets the container's Ethernet device's MAC address
+    --ip=""          : Sets the container's Ethernet device's IPv4 address
+    --ip6=""         : Sets the container's Ethernet device's IPv6 address
 
 By default, all containers have networking enabled and they can make any
 outgoing connections. The operator can completely disable networking
@@ -389,7 +410,7 @@ The following example creates a network using the built-in `bridge` network
 driver and running a container in the created network
 
 ```
-$ docker network create -d overlay my-net
+$ docker network create -d bridge my-net
 $ docker run --net=my-net -itd --name=container3 busybox
 ```
 
@@ -504,9 +525,10 @@ Or, to get the last time the container was (re)started;
     $ docker inspect -f "{{ .State.StartedAt }}" my-container
     # 2015-03-04T23:47:07.691840179Z
 
-You cannot set any restart policy in combination with
-["clean up (--rm)"](#clean-up-rm). Setting both `--restart` and `--rm`
-results in an error.
+
+Combining `--restart` (restart policy) with the `--rm` (clean up) flag results
+in an error. On container restart, attached clients are disconnected. See the
+examples on using the [`--rm` (clean up)](#clean-up-rm) flag later in this page.
 
 ### Examples
 
@@ -529,7 +551,7 @@ The exit code from `docker run` gives information about why the container
 failed to run or why it exited.  When `docker run` exits with a non-zero code,
 the exit codes follow the `chroot` standard, see below:
 
-**_125_** if the error is with Docker daemon **_itself_** 
+**_125_** if the error is with Docker daemon **_itself_**
 
     $ docker run --foo busybox; echo $?
     # flag provided but not defined: --foo
@@ -552,7 +574,7 @@ the exit codes follow the `chroot` standard, see below:
 
 **_Exit code_** of **_contained command_** otherwise
 
-    $ docker run busybox /bin/sh -c 'exit 3' 
+    $ docker run busybox /bin/sh -c 'exit 3'
     # 3
 
 ## Clean up (--rm)
@@ -569,7 +591,11 @@ the container exits**, you can add the `--rm` flag:
 
 > **Note**: When you set the `--rm` flag, Docker also removes the volumes
 associated with the container when the container is removed. This is similar
-to running `docker rm -v my-container`.
+to running `docker rm -v my-container`. Only volumes that are specified without a
+name are removed. For example, with
+`docker run --rm -v /foo -v awesome:/bar busybox top`, the volume for `/foo` will be removed,
+but the volume for `/bar` will not. Volumes inheritted via `--volumes-from` will be removed
+with the same logic -- if the original volume was specified with a name it will **not** be removed.
 
 ## Security configuration
     --security-opt="label:user:USER"   : Set the label user for the container
@@ -632,6 +658,8 @@ container:
 | `--blkio-weight-device=""` | Block IO weight (relative device weight, format: `DEVICE_NAME:WEIGHT`)                                                                          |
 | `--device-read-bps=""`     | Limit read rate from a device (format: `<device-path>:<number>[<unit>]`). Number is a positive integer. Unit can be one of `kb`, `mb`, or `gb`. |
 | `--device-write-bps=""`    | Limit write rate to a device (format: `<device-path>:<number>[<unit>]`). Number is a positive integer. Unit can be one of `kb`, `mb`, or `gb`.  |
+| `--device-read-iops="" `   | Limit read rate (IO per second) from a device (format: `<device-path>:<number>`). Number is a positive integer.                                 |
+| `--device-write-iops="" `  | Limit write rate (IO per second) to a device (format: `<device-path>:<number>`). Number is a positive integer.                                  |
 | `--oom-kill-disable=false` | Whether to disable OOM Killer for the container or not.                                                                                         |
 | `--memory-swappiness=""`   | Tune a container's memory swappiness behavior. Accepts an integer between 0 and 100.                                                            |
 | `--shm-size=""`            | Size of `/dev/shm`. The format is `<number><unit>`. `number` must be greater than `0`. Unit is optional and can be `b` (bytes), `k` (kilobytes), `m` (megabytes), or `g` (gigabytes). If you omit the unit, the system uses bytes. If you omit the size entirely, the system uses `64m`. |
@@ -973,9 +1001,9 @@ For example, to set `/dev/sda` device weight to `200`:
         ubuntu
 
 If you specify both the `--blkio-weight` and `--blkio-weight-device`, Docker
-uses the `--blkio-weight` as the default weight and uses `--blkio-weight-device` 
-to override this default with a new value on a specific device. 
-The following example uses a default weight of `300` and overrides this default 
+uses the `--blkio-weight` as the default weight and uses `--blkio-weight-device`
+to override this default with a new value on a specific device.
+The following example uses a default weight of `300` and overrides this default
 on `/dev/sda` setting that weight to `200`:
 
     $ docker run -it \
@@ -983,21 +1011,36 @@ on `/dev/sda` setting that weight to `200`:
         --blkio-weight-device "/dev/sda:200" \
         ubuntu
 
-The `--device-read-bps` flag limits the read rate from a device. For example,
-this command creates a container and limits the read rate to `1mb` per second
-from `/dev/sda`:
+The `--device-read-bps` flag limits the read rate (bytes per second) from a device.
+For example, this command creates a container and limits the read rate to `1mb`
+per second from `/dev/sda`:
 
     $ docker run -it --device-read-bps /dev/sda:1mb ubuntu
 
-The `--device-write-bps` flag limits the write rate to a device. For example,
-this command creates a container and limits the write rate to `1mb` per second
-for `/dev/sda`: 
+The `--device-write-bps` flag limits the write rate (bytes per second)to a device.
+For example, this command creates a container and limits the write rate to `1mb`
+per second for `/dev/sda`:
 
     $ docker run -it --device-write-bps /dev/sda:1mb ubuntu
 
 Both flags take limits in the `<device-path>:<limit>[unit]` format. Both read
 and write rates must be a positive integer. You can specify the rate in `kb`
 (kilobytes), `mb` (megabytes), or `gb` (gigabytes).
+
+The `--device-read-iops` flag limits read rate (IO per second) from a device.
+For example, this command creates a container and limits the read rate to
+`1000` IO per second from `/dev/sda`:
+
+    $ docker run -ti --device-read-iops /dev/sda:1000 ubuntu
+
+The `--device-write-iops` flag limits write rate (IO per second) to a device.
+For example, this command creates a container and limits the write rate to
+`1000` IO per second to `/dev/sda`:
+
+    $ docker run -ti --device-write-iops /dev/sda:1000 ubuntu
+
+Both flags take limits in the `<device-path>:<limit>` format. Both read and
+write rates must be a positive integer.
 
 ## Additional groups
     --group-add: Add Linux capabilities
@@ -1019,7 +1062,7 @@ one can use this flag:
 By default, Docker containers are "unprivileged" and cannot, for
 example, run a Docker daemon inside a Docker container. This is because
 by default a container is not allowed to access any devices, but a
-"privileged" container is given access to all devices (see 
+"privileged" container is given access to all devices (see
 the documentation on [cgroups devices](https://www.kernel.org/doc/Documentation/cgroups/devices.txt)).
 
 When the operator executes `docker run --privileged`, Docker will enable
@@ -1153,7 +1196,7 @@ container's logging driver. The following options are supported:
 
 The `docker logs` command is available only for the `json-file` and `journald`
 logging drivers.  For detailed information on working with logging drivers, see
-[Configure a logging driver](logging/overview.md).
+[Configure a logging driver](../admin/logging/overview.md).
 
 
 ## Overriding Dockerfile image defaults
@@ -1221,7 +1264,7 @@ The following `run` command options work with container networking:
 
     --expose=[]: Expose a port or a range of ports inside the container.
                  These are additional to those exposed by the `EXPOSE` instruction
-    -P=false   : Publish all exposed ports to the host interfaces
+    -P         : Publish all exposed ports to the host interfaces
     -p=[]      : Publish a container᾿s port or a range of ports to the host
                    format: ip:hostPort:containerPort | ip::containerPort | hostPort:containerPort | containerPort
                    Both hostPort and containerPort can be specified as a
@@ -1264,12 +1307,12 @@ specifies `EXPOSE 80` in the Dockerfile). At runtime, the port might be
 bound to 42800 on the host. To find the mapping between the host ports
 and the exposed ports, use `docker port`.
 
-If the operator uses `--link` when starting a new client container, then the
-client container can access the exposed port via a private networking interface.
-Linking is a legacy feature that is only supported on the default bridge
-network. You should prefer the Docker networks feature instead. For more
-information on this feature, see the [*Docker network
-overview*""](../userguide/networking/index.md)).
+If the operator uses `--link` when starting a new client container in the
+default bridge network, then the client container can access the exposed
+port via a private networking interface.
+If `--link` is used when starting a container in a user-defined network as
+described in [*Docker network overview*""](../userguide/networking/index.md)),
+it will provide a named alias for the container being linked to.
 
 ### ENV (environment variables)
 
@@ -1322,9 +1365,14 @@ Similarly the operator can set the **hostname** with `-h`.
 
 ### TMPFS (mount tmpfs filesystems)
 
-    --tmpfs=[]: Create a tmpfs mount with: container-dir[:<options>], where the options are identical to the Linux `mount -t tmpfs -o` command.
+```bash
+--tmpfs=[]: Create a tmpfs mount with: container-dir[:<options>],
+            where the options are identical to the Linux
+            'mount -t tmpfs -o' command.
+```
 
-    Underlying content from the "container-dir" is copied into tmpfs.
+The example below mounts an empty tmpfs into the container with the `rw`,
+`noexec`, `nosuid`, and `size=65536k` options.
 
     $ docker run -d --tmpfs /run:rw,noexec,nosuid,size=65536k my_image
 
@@ -1341,11 +1389,19 @@ Similarly the operator can set the **hostname** with `-h`.
     --volumes-from="": Mount all volumes from the given container(s)
 
 > **Note**:
-> The auto-creation of the host path has been [*deprecated*](../misc/deprecated.md#auto-creating-missing-host-paths-for-bind-mounts).
+> The auto-creation of the host path has been [*deprecated*](../deprecated.md#auto-creating-missing-host-paths-for-bind-mounts).
+
+> **Note**:
+> When using systemd to manage the Docker daemon's start and stop, in the systemd
+> unit file there is an option to control mount propagation for the Docker daemon
+> itself, called `MountFlags`. The value of this setting may cause Docker to not
+> see mount propagation changes made on the mount point. For example, if this value
+> is `slave`, you may not be able to use the `shared` or `rshared` propagation on
+> a volume.
 
 The volumes commands are complex enough to have their own documentation
 in section [*Managing data in
-containers*](../userguide/dockervolumes.md). A developer can define
+containers*](../userguide/containers/dockervolumes.md). A developer can define
 one or more `VOLUME`'s associated with an image, but only the operator
 can give access from one container to another (or from a container to a
 volume mounted on the host).

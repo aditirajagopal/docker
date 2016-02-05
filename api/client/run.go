@@ -7,14 +7,17 @@ import (
 	"runtime"
 	"strings"
 
+	"golang.org/x/net/context"
+
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/types"
 	Cli "github.com/docker/docker/cli"
 	derr "github.com/docker/docker/errors"
 	"github.com/docker/docker/opts"
 	"github.com/docker/docker/pkg/promise"
 	"github.com/docker/docker/pkg/signal"
-	"github.com/docker/docker/runconfig"
+	"github.com/docker/docker/pkg/stringid"
+	runconfigopts "github.com/docker/docker/runconfig/opts"
+	"github.com/docker/engine-api/types"
 	"github.com/docker/libnetwork/resolvconf/dns"
 )
 
@@ -74,6 +77,7 @@ func (cli *DockerCli) CmdRun(args ...string) error {
 		flDetach     = cmd.Bool([]string{"d", "-detach"}, false, "Run container in background and print container ID")
 		flSigProxy   = cmd.Bool([]string{"-sig-proxy"}, true, "Proxy received signals to the process")
 		flName       = cmd.String([]string{"-name"}, "", "Assign a name to the container")
+		flDetachKeys = cmd.String([]string{"-detach-keys"}, "", "Override the key sequence for detaching a container")
 		flAttach     *opts.ListOpts
 
 		ErrConflictAttachDetach               = fmt.Errorf("Conflicting options: -a and -d")
@@ -81,15 +85,16 @@ func (cli *DockerCli) CmdRun(args ...string) error {
 		ErrConflictDetachAutoRemove           = fmt.Errorf("Conflicting options: --rm and -d")
 	)
 
-	config, hostConfig, cmd, err := runconfig.Parse(cmd, args)
+	config, hostConfig, networkingConfig, cmd, err := runconfigopts.Parse(cmd, args)
+
 	// just in case the Parse does not exit
 	if err != nil {
 		cmd.ReportError(err.Error(), true)
 		os.Exit(125)
 	}
 
-	if hostConfig.OomKillDisable && hostConfig.Memory == 0 {
-		fmt.Fprintf(cli.err, "WARNING: Dangerous only disable the OOM Killer on containers but not set the '-m/--memory' option\n")
+	if hostConfig.OomKillDisable != nil && *hostConfig.OomKillDisable && hostConfig.Memory == 0 {
+		fmt.Fprintf(cli.err, "WARNING: Disabling the OOM killer on containers without setting a '-m/--memory' limit may be dangerous.\n")
 	}
 
 	if len(hostConfig.DNS) > 0 {
@@ -144,7 +149,7 @@ func (cli *DockerCli) CmdRun(args ...string) error {
 		hostConfig.ConsoleSize[0], hostConfig.ConsoleSize[1] = cli.getTtySize()
 	}
 
-	createResponse, err := cli.createContainer(config, hostConfig, hostConfig.ContainerIDFile, *flName)
+	createResponse, err := cli.createContainer(config, hostConfig, networkingConfig, hostConfig.ContainerIDFile, *flName)
 	if err != nil {
 		cmd.ReportError(err.Error(), true)
 		return runStartContainerErr(err)
@@ -188,34 +193,41 @@ func (cli *DockerCli) CmdRun(args ...string) error {
 			}
 		}
 
+		if *flDetachKeys != "" {
+			cli.configFile.DetachKeys = *flDetachKeys
+		}
+
 		options := types.ContainerAttachOptions{
 			ContainerID: createResponse.ID,
 			Stream:      true,
 			Stdin:       config.AttachStdin,
 			Stdout:      config.AttachStdout,
 			Stderr:      config.AttachStderr,
+			DetachKeys:  cli.configFile.DetachKeys,
 		}
 
 		resp, err := cli.client.ContainerAttach(options)
 		if err != nil {
 			return err
 		}
+		if in != nil && config.Tty {
+			if err := cli.setRawTerminal(); err != nil {
+				return err
+			}
+			defer cli.restoreTerminal(in)
+		}
 		errCh = promise.Go(func() error {
 			return cli.holdHijackedConnection(config.Tty, in, out, stderr, resp)
 		})
 	}
 
-	defer func() {
-		if *flAutoRemove {
-			options := types.ContainerRemoveOptions{
-				ContainerID:   createResponse.ID,
-				RemoveVolumes: true,
+	if *flAutoRemove {
+		defer func() {
+			if err := cli.removeContainer(createResponse.ID, true, false, false); err != nil {
+				fmt.Fprintf(cli.err, "%v\n", err)
 			}
-			if err := cli.client.ContainerRemove(options); err != nil {
-				fmt.Fprintf(cli.err, "Error deleting container: %s\n", err)
-			}
-		}
-	}()
+		}()
+	}
 
 	//start the container
 	if err := cli.client.ContainerStart(createResponse.ID); err != nil {
@@ -247,9 +259,19 @@ func (cli *DockerCli) CmdRun(args ...string) error {
 
 	// Attached mode
 	if *flAutoRemove {
+		// Warn user if they detached us
+		js, err := cli.client.ContainerInspect(createResponse.ID)
+		if err != nil {
+			return runStartContainerErr(err)
+		}
+		if js.State.Running == true || js.State.Paused == true {
+			fmt.Fprintf(cli.out, "Detached from %s, awaiting its termination in order to uphold \"--rm\".\n",
+				stringid.TruncateID(createResponse.ID))
+		}
+
 		// Autoremove: wait for the container to finish, retrieve
 		// the exit code and remove the container
-		if status, err = cli.client.ContainerWait(createResponse.ID); err != nil {
+		if status, err = cli.client.ContainerWait(context.Background(), createResponse.ID); err != nil {
 			return runStartContainerErr(err)
 		}
 		if _, status, err = getExitCode(cli, createResponse.ID); err != nil {
@@ -259,7 +281,7 @@ func (cli *DockerCli) CmdRun(args ...string) error {
 		// No Autoremove: Simply retrieve the exit code
 		if !config.Tty {
 			// In non-TTY mode, we can't detach, so we must wait for container exit
-			if status, err = cli.client.ContainerWait(createResponse.ID); err != nil {
+			if status, err = cli.client.ContainerWait(context.Background(), createResponse.ID); err != nil {
 				return err
 			}
 		} else {

@@ -1,16 +1,18 @@
 package daemon
 
 import (
+	"fmt"
 	"runtime"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/container"
 	derr "github.com/docker/docker/errors"
 	"github.com/docker/docker/runconfig"
+	containertypes "github.com/docker/engine-api/types/container"
 )
 
 // ContainerStart starts a container.
-func (daemon *Daemon) ContainerStart(name string, hostConfig *runconfig.HostConfig) error {
+func (daemon *Daemon) ContainerStart(name string, hostConfig *containertypes.HostConfig) error {
 	container, err := daemon.GetContainer(name)
 	if err != nil {
 		return err
@@ -30,11 +32,21 @@ func (daemon *Daemon) ContainerStart(name string, hostConfig *runconfig.HostConf
 		// creating a container, not during start.
 		if hostConfig != nil {
 			logrus.Warn("DEPRECATED: Setting host configuration options when the container starts is deprecated and will be removed in Docker 1.12")
-			if err := daemon.adaptContainerSettings(hostConfig, false); err != nil {
+			oldNetworkMode := container.HostConfig.NetworkMode
+			if err := daemon.setSecurityOptions(container, hostConfig); err != nil {
 				return err
 			}
 			if err := daemon.setHostConfig(container, hostConfig); err != nil {
 				return err
+			}
+			newNetworkMode := container.HostConfig.NetworkMode
+			if string(oldNetworkMode) != string(newNetworkMode) {
+				// if user has change the network mode on starting, clean up the
+				// old networks. It is a deprecated feature and will be removed in Docker 1.12
+				container.NetworkSettings.Networks = nil
+				if err := container.ToDisk(); err != nil {
+					return err
+				}
 			}
 			container.InitDNSHostConfig()
 		}
@@ -47,6 +59,11 @@ func (daemon *Daemon) ContainerStart(name string, hostConfig *runconfig.HostConf
 	// check if hostConfig is in line with the current system settings.
 	// It may happen cgroups are umounted or the like.
 	if _, err = daemon.verifyContainerSettings(container.HostConfig, nil); err != nil {
+		return err
+	}
+	// Adapt for old containers in case we have updates in this function and
+	// old containers never have chance to call the new function in create stage.
+	if err := daemon.adaptContainerSettings(container.HostConfig, false); err != nil {
 		return err
 	}
 
@@ -85,7 +102,10 @@ func (daemon *Daemon) containerStart(container *container.Container) (err error)
 			}
 			container.ToDisk()
 			daemon.Cleanup(container)
-			daemon.LogContainerEvent(container, "die")
+			attributes := map[string]string{
+				"exitCode": fmt.Sprintf("%d", container.ExitCode),
+			}
+			daemon.LogContainerEventWithAttributes(container, "die", attributes)
 		}
 	}()
 
@@ -150,7 +170,7 @@ func (daemon *Daemon) Cleanup(container *container.Container) {
 		daemon.unregisterExecCommand(container, eConfig)
 	}
 
-	if err := container.UnmountVolumes(false); err != nil {
+	if err := container.UnmountVolumes(false, daemon.LogVolumeEvent); err != nil {
 		logrus.Warnf("%s cleanup: Failed to umount volumes: %v", container.ID, err)
 	}
 }

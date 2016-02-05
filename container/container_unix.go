@@ -13,15 +13,17 @@ import (
 	"syscall"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/daemon/execdriver"
 	derr "github.com/docker/docker/errors"
 	"github.com/docker/docker/pkg/chrootarchive"
-	"github.com/docker/docker/pkg/nat"
 	"github.com/docker/docker/pkg/symlink"
 	"github.com/docker/docker/pkg/system"
+	runconfigopts "github.com/docker/docker/runconfig/opts"
 	"github.com/docker/docker/utils"
 	"github.com/docker/docker/volume"
+	containertypes "github.com/docker/engine-api/types/container"
+	"github.com/docker/engine-api/types/network"
+	"github.com/docker/go-connections/nat"
 	"github.com/docker/libnetwork"
 	"github.com/docker/libnetwork/netlabel"
 	"github.com/docker/libnetwork/options"
@@ -32,8 +34,8 @@ import (
 // DefaultSHMSize is the default size (64MB) of the SHM which will be mounted in the container
 const DefaultSHMSize int64 = 67108864
 
-// Container holds the fields specific to unixen implementations. See
-// CommonContainer for standard fields common to all containers.
+// Container holds the fields specific to unixen implementations.
+// See CommonContainer for standard fields common to all containers.
 type Container struct {
 	CommonContainer
 
@@ -61,10 +63,6 @@ func (container *Container) CreateDaemonEnvironment(linkedEnv []string) []string
 	env := []string{
 		"PATH=" + system.DefaultPathEnv,
 		"HOSTNAME=" + fullHostname,
-		// Note: we don't set HOME here because it'll get autoset intelligently
-		// based on the value of USER inside dockerinit, but only if it isn't
-		// set already (ie, that can be overridden by setting HOME via -e or ENV
-		// in a Dockerfile).
 	}
 	if container.Config.Tty {
 		env = append(env, "TERM=xterm")
@@ -127,18 +125,26 @@ func (container *Container) buildPortMapInfo(ep libnetwork.Endpoint) error {
 		return derr.ErrorCodeEmptyNetwork
 	}
 
+	if len(networkSettings.Ports) == 0 {
+		pm, err := getEndpointPortMapInfo(ep)
+		if err != nil {
+			return err
+		}
+		networkSettings.Ports = pm
+	}
+	return nil
+}
+
+func getEndpointPortMapInfo(ep libnetwork.Endpoint) (nat.PortMap, error) {
+	pm := nat.PortMap{}
 	driverInfo, err := ep.DriverInfo()
 	if err != nil {
-		return err
+		return pm, err
 	}
 
 	if driverInfo == nil {
 		// It is not an error for epInfo to be nil
-		return nil
-	}
-
-	if networkSettings.Ports == nil {
-		networkSettings.Ports = nat.PortMap{}
+		return pm, nil
 	}
 
 	if expData, ok := driverInfo[netlabel.ExposedPorts]; ok {
@@ -146,30 +152,45 @@ func (container *Container) buildPortMapInfo(ep libnetwork.Endpoint) error {
 			for _, tp := range exposedPorts {
 				natPort, err := nat.NewPort(tp.Proto.String(), strconv.Itoa(int(tp.Port)))
 				if err != nil {
-					return derr.ErrorCodeParsingPort.WithArgs(tp.Port, err)
+					return pm, derr.ErrorCodeParsingPort.WithArgs(tp.Port, err)
 				}
-				networkSettings.Ports[natPort] = nil
+				pm[natPort] = nil
 			}
 		}
 	}
 
 	mapData, ok := driverInfo[netlabel.PortMap]
 	if !ok {
-		return nil
+		return pm, nil
 	}
 
 	if portMapping, ok := mapData.([]types.PortBinding); ok {
 		for _, pp := range portMapping {
 			natPort, err := nat.NewPort(pp.Proto.String(), strconv.Itoa(int(pp.Port)))
 			if err != nil {
-				return err
+				return pm, err
 			}
 			natBndg := nat.PortBinding{HostIP: pp.HostIP.String(), HostPort: strconv.Itoa(int(pp.HostPort))}
-			networkSettings.Ports[natPort] = append(networkSettings.Ports[natPort], natBndg)
+			pm[natPort] = append(pm[natPort], natBndg)
 		}
 	}
 
-	return nil
+	return pm, nil
+}
+
+func getSandboxPortMapInfo(sb libnetwork.Sandbox) nat.PortMap {
+	pm := nat.PortMap{}
+	if sb == nil {
+		return pm
+	}
+
+	for _, ep := range sb.Endpoints() {
+		pm, _ = getEndpointPortMapInfo(ep)
+		if len(pm) > 0 {
+			break
+		}
+	}
+	return pm
 }
 
 // BuildEndpointInfo sets endpoint-related fields on container.NetworkSettings based on the provided network and endpoint.
@@ -192,6 +213,7 @@ func (container *Container) BuildEndpointInfo(n libnetwork.Network, ep libnetwor
 	if _, ok := networkSettings.Networks[n.Name()]; !ok {
 		networkSettings.Networks[n.Name()] = new(network.EndpointSettings)
 	}
+	networkSettings.Networks[n.Name()].NetworkID = n.ID()
 	networkSettings.Networks[n.Name()].EndpointID = ep.ID()
 
 	iface := epInfo.Iface()
@@ -246,8 +268,23 @@ func (container *Container) UpdateSandboxNetworkSettings(sb libnetwork.Sandbox) 
 	return nil
 }
 
+// BuildJoinOptions builds endpoint Join options from a given network.
+func (container *Container) BuildJoinOptions(n libnetwork.Network) ([]libnetwork.EndpointOption, error) {
+	var joinOptions []libnetwork.EndpointOption
+	if epConfig, ok := container.NetworkSettings.Networks[n.Name()]; ok {
+		for _, str := range epConfig.Links {
+			name, alias, err := runconfigopts.ParseLink(str)
+			if err != nil {
+				return nil, err
+			}
+			joinOptions = append(joinOptions, libnetwork.CreateOptionAlias(name, alias))
+		}
+	}
+	return joinOptions, nil
+}
+
 // BuildCreateEndpointOptions builds endpoint options from a given network.
-func (container *Container) BuildCreateEndpointOptions(n libnetwork.Network) ([]libnetwork.EndpointOption, error) {
+func (container *Container) BuildCreateEndpointOptions(n libnetwork.Network, epConfig *network.EndpointSettings, sb libnetwork.Sandbox) ([]libnetwork.EndpointOption, error) {
 	var (
 		portSpecs     = make(nat.PortSet)
 		bindings      = make(nat.PortMap)
@@ -260,10 +297,45 @@ func (container *Container) BuildCreateEndpointOptions(n libnetwork.Network) ([]
 		createOptions = append(createOptions, libnetwork.CreateOptionAnonymous())
 	}
 
-	// Other configs are applicable only for the endpoint in the network
+	if epConfig != nil {
+		ipam := epConfig.IPAMConfig
+		if ipam != nil && (ipam.IPv4Address != "" || ipam.IPv6Address != "") {
+			createOptions = append(createOptions,
+				libnetwork.CreateOptionIpam(net.ParseIP(ipam.IPv4Address), net.ParseIP(ipam.IPv6Address), nil))
+		}
+
+		for _, alias := range epConfig.Aliases {
+			createOptions = append(createOptions, libnetwork.CreateOptionMyAlias(alias))
+		}
+	}
+
+	if !containertypes.NetworkMode(n.Name()).IsUserDefined() {
+		createOptions = append(createOptions, libnetwork.CreateOptionDisableResolution())
+	}
+
+	// configs that are applicable only for the endpoint in the network
 	// to which container was connected to on docker run.
-	if n.Name() != container.HostConfig.NetworkMode.NetworkName() &&
-		!(n.Name() == "bridge" && container.HostConfig.NetworkMode.IsDefault()) {
+	// Ideally all these network-specific endpoint configurations must be moved under
+	// container.NetworkSettings.Networks[n.Name()]
+	if n.Name() == container.HostConfig.NetworkMode.NetworkName() ||
+		(n.Name() == "bridge" && container.HostConfig.NetworkMode.IsDefault()) {
+		if container.Config.MacAddress != "" {
+			mac, err := net.ParseMAC(container.Config.MacAddress)
+			if err != nil {
+				return nil, err
+			}
+
+			genericOption := options.Generic{
+				netlabel.MacAddress: mac,
+			}
+
+			createOptions = append(createOptions, libnetwork.EndpointOptionGeneric(genericOption))
+		}
+	}
+
+	// Port-mapping rules belong to the container & applicable only to non-internal networks
+	portmaps := getSandboxPortMapInfo(sb)
+	if n.Info().Internal() || len(portmaps) > 0 {
 		return createOptions, nil
 	}
 
@@ -322,19 +394,6 @@ func (container *Container) BuildCreateEndpointOptions(n libnetwork.Network) ([]
 	createOptions = append(createOptions,
 		libnetwork.CreateOptionPortMapping(pbList),
 		libnetwork.CreateOptionExposedPorts(exposeList))
-
-	if container.Config.MacAddress != "" {
-		mac, err := net.ParseMAC(container.Config.MacAddress)
-		if err != nil {
-			return nil, err
-		}
-
-		genericOption := options.Generic{
-			netlabel.MacAddress: mac,
-		}
-
-		createOptions = append(createOptions, libnetwork.EndpointOptionGeneric(genericOption))
-	}
 
 	return createOptions, nil
 }
@@ -543,12 +602,81 @@ func (container *Container) IpcMounts() []execdriver.Mount {
 	return mounts
 }
 
+func updateCommand(c *execdriver.Command, resources containertypes.Resources) {
+	c.Resources.BlkioWeight = resources.BlkioWeight
+	c.Resources.CPUShares = resources.CPUShares
+	c.Resources.CPUPeriod = resources.CPUPeriod
+	c.Resources.CPUQuota = resources.CPUQuota
+	c.Resources.CpusetCpus = resources.CpusetCpus
+	c.Resources.CpusetMems = resources.CpusetMems
+	c.Resources.Memory = resources.Memory
+	c.Resources.MemorySwap = resources.MemorySwap
+	c.Resources.MemoryReservation = resources.MemoryReservation
+	c.Resources.KernelMemory = resources.KernelMemory
+}
+
+// UpdateContainer updates resources of a container.
+func (container *Container) UpdateContainer(hostConfig *containertypes.HostConfig) error {
+	container.Lock()
+
+	resources := hostConfig.Resources
+	cResources := &container.HostConfig.Resources
+	if resources.BlkioWeight != 0 {
+		cResources.BlkioWeight = resources.BlkioWeight
+	}
+	if resources.CPUShares != 0 {
+		cResources.CPUShares = resources.CPUShares
+	}
+	if resources.CPUPeriod != 0 {
+		cResources.CPUPeriod = resources.CPUPeriod
+	}
+	if resources.CPUQuota != 0 {
+		cResources.CPUQuota = resources.CPUQuota
+	}
+	if resources.CpusetCpus != "" {
+		cResources.CpusetCpus = resources.CpusetCpus
+	}
+	if resources.CpusetMems != "" {
+		cResources.CpusetMems = resources.CpusetMems
+	}
+	if resources.Memory != 0 {
+		cResources.Memory = resources.Memory
+	}
+	if resources.MemorySwap != 0 {
+		cResources.MemorySwap = resources.MemorySwap
+	}
+	if resources.MemoryReservation != 0 {
+		cResources.MemoryReservation = resources.MemoryReservation
+	}
+	if resources.KernelMemory != 0 {
+		cResources.KernelMemory = resources.KernelMemory
+	}
+	container.Unlock()
+
+	// If container is not running, update hostConfig struct is enough,
+	// resources will be updated when the container is started again.
+	// If container is running (including paused), we need to update
+	// the command so we can update configs to the real world.
+	if container.IsRunning() {
+		container.Lock()
+		updateCommand(container.Command, *cResources)
+		container.Unlock()
+	}
+
+	if err := container.ToDiskLocking(); err != nil {
+		logrus.Errorf("Error saving updated container: %v", err)
+		return err
+	}
+
+	return nil
+}
+
 func detachMounted(path string) error {
 	return syscall.Unmount(path, syscall.MNT_DETACH)
 }
 
 // UnmountVolumes unmounts all volumes
-func (container *Container) UnmountVolumes(forceSyscall bool) error {
+func (container *Container) UnmountVolumes(forceSyscall bool, volumeEventLog func(name, action string, attributes map[string]string)) error {
 	var (
 		volumeMounts []volume.MountPoint
 		err          error
@@ -579,6 +707,12 @@ func (container *Container) UnmountVolumes(forceSyscall bool) error {
 			if err := volumeMount.Volume.Unmount(); err != nil {
 				return err
 			}
+
+			attributes := map[string]string{
+				"driver":    volumeMount.Volume.DriverName(),
+				"container": container.ID,
+			}
+			volumeEventLog(volumeMount.Volume.Name(), "unmount", attributes)
 		}
 	}
 
@@ -598,7 +732,7 @@ func copyExistingContents(source, destination string) error {
 			return err
 		}
 		if len(srcList) == 0 {
-			// If the source volume is empty copy files from the root into the volume
+			// If the source volume is empty, copies files from the root into the volume
 			if err := chrootarchive.CopyWithTar(source, destination); err != nil {
 				return err
 			}

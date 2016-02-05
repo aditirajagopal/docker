@@ -4,7 +4,7 @@ title = "Access authorization plugin"
 description = "How to create authorization plugins to manage access control to your Docker daemon."
 keywords = ["security, authorization, authentication, docker, documentation, plugin, extend"]
 [menu.main]
-parent = "mn_extend"
+parent = "engine_extend"
 weight = -1
 +++
 <![end-metadata]-->
@@ -12,7 +12,7 @@ weight = -1
 
 # Create an authorization plugin
 
-Docker’s out-of-the-box authorization model is all or nothing. Any user with
+Docker's out-of-the-box authorization model is all or nothing. Any user with
 permission to access the Docker daemon can run any Docker client command. The
 same is true for callers using Docker's remote API to contact the daemon. If you
 require greater access control, you can create authorization plugins and add
@@ -41,9 +41,12 @@ on both the current authentication context and the command context. The
 authentication context contains all user details and the authentication method.
 The command context contains all the relevant request data.
 
-Authorization plugins must follow the rules described in [Docker Plugin API](plugin_api.md). 
-Each plugin must reside within directories described under the 
+Authorization plugins must follow the rules described in [Docker Plugin API](plugin_api.md).
+Each plugin must reside within directories described under the
 [Plugin discovery](plugin_api.md#plugin-discovery) section.
+
+**Note**: the abbreviations `AuthZ` and `AuthN` mean authorization and authentication
+respectively.
 
 ## Basic architecture
 
@@ -87,25 +90,22 @@ configure proper authentication and security policies.
 
 ## Docker client flows
 
-To enable and configure the authorization plugin, the plugin developer must 
+To enable and configure the authorization plugin, the plugin developer must
 support the Docker client interactions detailed in this section.
 
 ### Setting up Docker daemon
 
 Enable the authorization plugin with a dedicated command line flag in the
-`--authz-plugin=PLUGIN_ID` format. The flag supplies a `PLUGIN_ID` value.
-This value can be the plugin’s socket or a path to a specification file.
+`--authorization-plugin=PLUGIN_ID` format. The flag supplies a `PLUGIN_ID`
+value. This value can be the plugin’s socket or a path to a specification file.
 
 ```bash
-$ docker daemon --authz-plugin=plugin1 --authz-plugin=plugin2,...
+$ docker daemon --authorization-plugin=plugin1 --authorization-plugin=plugin2,...
 ```
 
-Docker's authorization subsystem supports multiple `--authz-plugin` parameters.
+Docker's authorization subsystem supports multiple `--authorization-plugin` parameters.
 
 ### Calling authorized command (allow)
-
-Your plugin must support calling the `allow` command to authorize a command. 
-This call does not impact Docker's command line.
 
 ```bash
 $ docker pull centos
@@ -116,25 +116,23 @@ f1b10cd84249: Pull complete
 
 ### Calling unauthorized command (deny)
 
-Your plugin must support calling the `deny` command to report on the outcome of 
-a plugin interaction. This call returns messages to Docker's command line informing 
-the user of the outcome of each call.  
+```bash
+$ docker pull centos
+...
+docker: Error response from daemon: authorization denied by plugin PLUGIN_NAME: volumes are not allowed.
+```
+
+### Error from plugins
 
 ```bash
 $ docker pull centos
-…
-Authorization failed. Pull command for user 'john_doe' is 
-denied by authorization plugin 'ACME' with message 
-‘[ACME] User 'john_doe' is not allowed to perform the pull 
-command’
+...
+docker: Error response from daemon: plugin PLUGIN_NAME failed with error: AuthZPlugin.AuthZReq: Cannot connect to the Docker daemon. Is the docker daemon running on this host?.
 ```
-
-Where multiple authorization plugins are installed, multiple messages are expected.
-
 
 ## API schema and implementation
 
-In addition to Docker's standard plugin registration method, each plugin 
+In addition to Docker's standard plugin registration method, each plugin
 should implement the following two methods:
 
 * `/AuthzPlugin.AuthZReq` This authorize request method is called before the Docker daemon processes the client request.
@@ -200,7 +198,7 @@ should implement the following two methods:
 
 The modified response enables the authorization plugin to manipulate the content
 of the HTTP response. In case of more than one plugin, each subsequent plugin
-receives a response (optionally) modified by a previous plugin. 
+receives a response (optionally) modified by a previous plugin.
 
 ### Request authorization
 
@@ -224,7 +222,7 @@ Name    | Type   | Description
 --------|--------|----------------------------------------------------------------------------------
 Allow   | bool   | Boolean value indicating whether the request is allowed or denied
 Msg     | string | Authorization message (will be returned to the client in case the access is denied)
-Err     | string | Error message (will be returned to the client in case the plugin encounter an error)
+Err     | string | Error message (will be returned to the client in case the plugin encounter an error. The string value supplied may appear in logs, so should not include confidential information)
 
 ### Response authorization
 
@@ -252,4 +250,4 @@ Name    | Type   | Description
 --------|--------|----------------------------------------------------------------------------------
 Allow   | bool   | Boolean value indicating whether the response is allowed or denied
 Msg     | string | Authorization message (will be returned to the client in case the access is denied)
-Err     | string | Error message (will be returned to the client in case the plugin encounter an error)
+Err     | string | Error message (will be returned to the client in case the plugin encounter an error. The string value supplied may appear in logs, so should not include confidential information)

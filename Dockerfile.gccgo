@@ -6,7 +6,7 @@
 # docker build -t docker -f Dockerfile.gccgo .
 #
 
-FROM gcc:5.2
+FROM gcc:5.3
 
 # Packaged dependencies
 RUN apt-get update && apt-get install -y \
@@ -41,9 +41,7 @@ RUN cd /usr/local/lvm2 \
 	&& make install_device-mapper
 # see https://git.fedorahosted.org/cgit/lvm2.git/tree/INSTALL
 
-# install seccomp
-# this can be changed to the ubuntu package libseccomp-dev if dockerinit is removed,
-# we need libseccomp.a (which the package does not provide) for dockerinit
+# install seccomp: the version shipped in jessie is too old
 ENV SECCOMP_VERSION v2.2.3
 RUN set -x \
     && export SECCOMP_PATH=$(mktemp -d) \
@@ -61,7 +59,7 @@ RUN set -x \
 ENV GOPATH /go:/go/src/github.com/docker/docker/vendor
 
 # Get the "docker-py" source so we can run their integration tests
-ENV DOCKER_PY_COMMIT 139850f3f3b17357bab5ba3edfb745fb14043764
+ENV DOCKER_PY_COMMIT e2878cbcc3a7eef99917adc1be252800b0e41ece
 RUN git clone https://github.com/docker/docker-py.git /docker-py \
 	&& cd /docker-py \
 	&& git checkout -q $DOCKER_PY_COMMIT

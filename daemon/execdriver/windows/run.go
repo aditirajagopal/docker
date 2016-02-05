@@ -9,10 +9,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/Microsoft/hcsshim"
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/daemon/execdriver"
-	"github.com/microsoft/hcsshim"
 )
 
 // defaultContainerNAT is the default name of the container NAT device that is
@@ -104,14 +105,7 @@ func (d *Driver) Run(c *execdriver.Command, pipes *execdriver.Pipes, hooks execd
 		HostName:                c.Hostname,
 	}
 
-	// Work out the isolation (whether it is a hypervisor partition)
-	if c.Isolation.IsDefault() {
-		// Not specified by caller. Take daemon default
-		cu.HvPartition = defaultIsolation.IsHyperV()
-	} else {
-		// Take value specified by caller
-		cu.HvPartition = c.Isolation.IsHyperV()
-	}
+	cu.HvPartition = c.HvPartition
 
 	if cu.HvPartition {
 		cu.SandboxPath = filepath.Dir(c.LayerFolder)
@@ -230,10 +224,33 @@ func (d *Driver) Run(c *execdriver.Command, pipes *execdriver.Pipes, hooks execd
 
 	configuration := string(configurationb)
 
-	err = hcsshim.CreateComputeSystem(c.ID, configuration)
-	if err != nil {
-		logrus.Debugln("Failed to create temporary container ", err)
-		return execdriver.ExitStatus{ExitCode: -1}, err
+	// TODO Windows TP5 timeframe. Remove when TP4 is no longer supported.
+	// The following a workaround for Windows TP4 which has a networking
+	// bug which fairly frequently returns an error. Back off and retry.
+	maxAttempts := 1
+	if TP4RetryHack {
+		maxAttempts = 5
+	}
+	i := 0
+	for i < maxAttempts {
+		i++
+		err = hcsshim.CreateComputeSystem(c.ID, configuration)
+		if err != nil {
+			if TP4RetryHack {
+				if !strings.Contains(err.Error(), `Win32 API call returned error r1=0x800401f3`) && // Invalid class string
+					!strings.Contains(err.Error(), `Win32 API call returned error r1=0x80070490`) && // Element not found
+					!strings.Contains(err.Error(), `Win32 API call returned error r1=0x80070002`) && // The system cannot find the file specified
+					!strings.Contains(err.Error(), `Win32 API call returned error r1=0x800704c6`) && // The network is not present or not started
+					!strings.Contains(err.Error(), `Win32 API call returned error r1=0x800700a1`) { // The specified path is invalid
+					logrus.Debugln("Failed to create temporary container ", err)
+					return execdriver.ExitStatus{ExitCode: -1}, err
+				}
+				logrus.Warnf("Invoking Windows TP4 retry hack (%d of %d)", i, maxAttempts-1)
+				time.Sleep(50 * time.Millisecond)
+			}
+		} else {
+			break
+		}
 	}
 
 	// Start the container

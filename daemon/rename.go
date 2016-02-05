@@ -40,20 +40,21 @@ func (daemon *Daemon) ContainerRename(oldName, newName string) error {
 		if err != nil {
 			container.Name = oldName
 			daemon.reserveName(container.ID, oldName)
-			daemon.containerGraphDB.Delete(newName)
+			daemon.releaseName(newName)
 		}
 	}()
 
-	if err = daemon.containerGraphDB.Delete(oldName); err != nil {
-		return derr.ErrorCodeRenameDelete.WithArgs(oldName, err)
-	}
-
+	daemon.releaseName(oldName)
 	if err = container.ToDisk(); err != nil {
 		return err
 	}
 
+	attributes := map[string]string{
+		"oldName": oldName,
+	}
+
 	if !container.Running {
-		daemon.LogContainerEvent(container, "rename")
+		daemon.LogContainerEventWithAttributes(container, "rename", attributes)
 		return nil
 	}
 
@@ -67,16 +68,18 @@ func (daemon *Daemon) ContainerRename(oldName, newName string) error {
 	}()
 
 	sid = container.NetworkSettings.SandboxID
-	sb, err = daemon.netController.SandboxByID(sid)
-	if err != nil {
-		return err
+	if daemon.netController != nil {
+		sb, err = daemon.netController.SandboxByID(sid)
+		if err != nil {
+			return err
+		}
+
+		err = sb.Rename(strings.TrimPrefix(container.Name, "/"))
+		if err != nil {
+			return err
+		}
 	}
 
-	err = sb.Rename(strings.TrimPrefix(container.Name, "/"))
-	if err != nil {
-		return err
-	}
-
-	daemon.LogContainerEvent(container, "rename")
+	daemon.LogContainerEventWithAttributes(container, "rename", attributes)
 	return nil
 }

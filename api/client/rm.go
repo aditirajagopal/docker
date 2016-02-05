@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/docker/docker/api/types"
 	Cli "github.com/docker/docker/cli"
 	flag "github.com/docker/docker/pkg/mflag"
+	"github.com/docker/engine-api/types"
 )
 
 // CmdRm removes one or more containers.
@@ -21,29 +21,34 @@ func (cli *DockerCli) CmdRm(args ...string) error {
 
 	cmd.ParseFlags(args, true)
 
-	var errNames []string
+	var errs []string
 	for _, name := range cmd.Args() {
 		if name == "" {
 			return fmt.Errorf("Container name cannot be empty")
 		}
 		name = strings.Trim(name, "/")
 
-		options := types.ContainerRemoveOptions{
-			ContainerID:   name,
-			RemoveVolumes: *v,
-			RemoveLinks:   *link,
-			Force:         *force,
-		}
-
-		if err := cli.client.ContainerRemove(options); err != nil {
-			fmt.Fprintf(cli.err, "%s\n", err)
-			errNames = append(errNames, name)
+		if err := cli.removeContainer(name, *v, *link, *force); err != nil {
+			errs = append(errs, err.Error())
 		} else {
 			fmt.Fprintf(cli.out, "%s\n", name)
 		}
 	}
-	if len(errNames) > 0 {
-		return fmt.Errorf("Error: failed to remove containers: %v", errNames)
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "\n"))
+	}
+	return nil
+}
+
+func (cli *DockerCli) removeContainer(containerID string, removeVolumes, removeLinks, force bool) error {
+	options := types.ContainerRemoveOptions{
+		ContainerID:   containerID,
+		RemoveVolumes: removeVolumes,
+		RemoveLinks:   removeLinks,
+		Force:         force,
+	}
+	if err := cli.client.ContainerRemove(options); err != nil {
+		return err
 	}
 	return nil
 }
